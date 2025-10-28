@@ -68,3 +68,4 @@ pip install onnxruntime
 - 确保 VB-Cable 或类似虚拟音频设备已正确安装和配置
 - 根据你的硬件选择合适的 Whisper 模型（GPU 用户可选择 small 模型获得更好效果）
 - 程序会自动检测 NVIDIA GPU 并提供相应选项
+
