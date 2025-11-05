@@ -1,4 +1,8 @@
 @echo off
+:: 设置代码页为 UTF-8
+chcp 65001 > nul
+call C:\Users\Win11\anaconda3\Scripts\activate.bat venv
+
 pyinstaller ^
   --onefile ^
   --windowed ^
@@ -9,6 +13,7 @@ pyinstaller ^
   --hidden-import=sklearn.tree._utils ^
   --collect-all faster_whisper ^
   --exclude-module matplotlib ^
+  --exclude-module torch.utils.tensorboard ^ 
   main.py
 
 echo.

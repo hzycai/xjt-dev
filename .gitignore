@@ -21,3 +21,5 @@ __pycache__/
 # Logs and databases
 *.log
 *.sqlite3
+# dist
+.dist/
