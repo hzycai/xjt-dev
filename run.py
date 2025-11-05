@@ -8,7 +8,6 @@ from utils.logger import get_logger
 import time
 import os
 import sys
-from faster_whisper import WhisperModel
 import torch 
 import cv2
 from filterprocess import (
