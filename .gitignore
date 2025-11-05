@@ -22,5 +22,6 @@ __pycache__/
 *.log
 *.sqlite3
 # dist
-.dist/
-.model/
+dist/
+model/
+models/
