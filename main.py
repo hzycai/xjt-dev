@@ -431,7 +431,9 @@ class VoiceFilterApp:
         try:
             # === 加载内置 Whisper 模型 ===
             # Replace with simpler model initialization from test_microphone_with_model.py
+            # model = AutoModel(model="paraformer-zh-streaming", model_revision="v2.0.4", disable_update=True)
             model = AutoModel(model="paraformer-zh-streaming", model_revision="v2.0.4", disable_update=True)
+
 
             # === 音频参数 ===
             INPUT_RATE = 16000   # Whisper 最佳输入

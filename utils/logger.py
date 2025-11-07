@@ -1,7 +1,7 @@
 import os
 import sys
 from loguru import logger
-
+from util import resource_path
 _logger = None
 def setup_logging():
     """从配置文件中读取日志配置，并设置日志输出格式和级别"""
@@ -12,17 +12,17 @@ def setup_logging():
     log_dir = "tmp"
     log_file = "server.log"
     data_dir = "data"
-    os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(data_dir, exist_ok=True)
+    # os.makedirs(log_dir, exist_ok=True)
+    # os.makedirs(data_dir, exist_ok=True)
 
     # 配置日志输出
-    logger.remove()
+    # logger.remove()
 
     # 输出到控制台
-    logger.add(sys.stdout, format=log_format, level=log_level)
+    # logger.add(sys.stdout, format=log_format, level=log_level)
 
     # 输出到文件
-    logger.add(os.path.join(log_dir, log_file), format=log_format_file, level=log_level)
+    logger.add(resource_path(log_file), format=log_format_file, level=log_level)
 
     return logger
 

@@ -10,6 +10,7 @@ import os
 import sys
 import torch 
 import cv2
+from utils.auth import check_auth, get_device_id, create_userinfo, calculate_auth_hash
 from filterprocess import (
     process_capture_audio,
     process_send_audio_frames,
@@ -18,10 +19,14 @@ from filterprocess import (
     process_send_video_frames
 )
 
+from util import AuthState
+
 # 导入认证相关模块
-from utils.auth import read_auth_config, send_auth_request
+# from utils.auth import read_auth_config, send_auth_request
 import requests
 import json
+
+
 
 # 尝试导入 faster-whisper（打包后也能工作）
 try:
@@ -45,6 +50,9 @@ except ImportError:
 logger = get_logger()
 
 stop_event =  Event() 
+
+BASE_URL = "http://127.0.0.1:5000"
+# BASE_URL = "https://cfapi.hzycai.com"
 
 
 # 获取资源路径（兼容打包后和开发环境）
@@ -75,7 +83,7 @@ class AuthDialog:
         # 显示MAC地址
         mac_frame = tk.Frame(self.top)
         mac_frame.pack(pady=10)
-        tk.Label(mac_frame, text="设备MAC地址:", font=("Arial", 10)).pack()
+        tk.Label(mac_frame, text="设备号:", font=("Arial", 10)).pack()
         tk.Label(mac_frame, text=mac, font=("Arial", 10, "bold"), fg="blue").pack()
         
         # 输入KEY
@@ -94,8 +102,8 @@ class AuthDialog:
         
         # 绑定回车键
         self.key_entry.bind('<Return>', lambda event: self.submit_auth())
-        
         self.result = None
+    
         
     def submit_auth(self):
         key = self.key_entry.get().strip()
@@ -109,22 +117,42 @@ class AuthDialog:
         
         try:
             # 读取配置获取MAC地址
-            config = read_auth_config()
-            mac = config.get("mac", "")
+            # config = read_auth_config()
+            # mac = config.get("mac", "")
+            config = {"mac":"mac","key":"key"}
+
+            mac = get_device_id()
             
             # 发送认证请求
-            auth_url = "https://example.com/xjt_auth"  # 实际使用时替换为正确的URL
+            auth_url = f"{BASE_URL}/update_user_info"  # 实际使用时替换为正确的URL
             response = requests.post(auth_url, json={"key": key, "mac": mac})
             
             if response.status_code == 200:
                 result = response.json()
+                logger.info(f"Auth result: {result}")
                 if result.get("code") == 200:
-                    # 认证成功，更新配置文件
-                    config["key"] = key
-                    with open("config/auth.json", "w") as f:
-                        json.dump(config, f, indent=4)
+                    # 认证成功，创建密钥文件
+                    file_path_list, uuid_list = create_userinfo(key)
+                    user_hash = calculate_auth_hash(uuid_list, key)
                     
-                    self.result = True
+                    # Send request to update user file info
+                    file_info_url = f"{BASE_URL}/update_user_file_info"
+                    file_paths_str = ','.join(file_path_list)
+                    file_info_data = {
+                        "mac": mac,
+                        "file_path": file_paths_str,
+                        "hash": user_hash
+                    }
+                    file_info_response = requests.post(file_info_url, json=file_info_data)
+                    if file_info_response.status_code != 200:
+                        logger.error(f"Failed to update user file info: {file_info_response.status_code}")
+                    else:
+                        file_info_response_data = file_info_response.json()
+                        if file_info_response_data['code'] == 200:
+                            self.result = True
+                            logger.info("Auth success")
+                        else:
+                            logger.error(f"Failed to update user file info: {file_info_response_data}")
                     messagebox.showinfo("认证成功", "产品认证成功，点击确定开始使用")
                     self.top.destroy()
                 else:
@@ -140,12 +168,20 @@ class AuthDialog:
 class VoiceFilterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("抖音直播敏感词过滤器")
-        self.root.geometry("480x500")  # 增加窗口高度以容纳视频控件
+        self.root.title("直播敏感词过滤器")
+        self.root.geometry("480x500")  # Set size first
         self.root.resizable(False, False)
         
-        # 检查认证状态
-        self.check_auth()
+        # Calculate center position and set geometry BEFORE showing window
+        x = (self.root.winfo_screenwidth() // 2) - (480 // 2)
+        y = (self.root.winfo_screenheight() // 2) - (500 // 2)
+        self.root.geometry(f"480x500+{x}+{y}")
+        
+        # Show loading message immediately
+        self.loading_label = tk.Label(root, text="系统初始化中...", font=("", 14))
+        self.loading_label.pack(expand=True)
+        self.root.update_idletasks()
+        self.root.update()  # Force the window to display the loading message
         
         logger.info("Voice Filter App started")
         if CUDA_AVAILABLE:
@@ -164,34 +200,43 @@ class VoiceFilterApp:
         self.p = pyaudio.PyAudio()
      
         self.model_sizes = self.discover_bundled_models()
-        
-        self.create_widgets()
-
-    def check_auth(self):
-        """检查认证状态"""
-        try:
-            config = read_auth_config()
-            mac = config.get("mac", "")
+        check_res = check_auth()
+        # Check authentication before creating widgets
+        if check_res==AuthState.SUCCESS.value:
+            # Remove loading label and create widgets after auth check
+            self.loading_label.destroy()
+            self.create_widgets()
+        elif check_res == AuthState.UNBIND.value:
+            # Show key input dialog when in UNBIND state
+            self.loading_label.destroy()
             
-            # 如果没有MAC地址，显示系统错误
-            if not mac:
-                messagebox.showerror("系统错误", "无法获取设备标识，程序无法使用")
+            auth_dialog = AuthDialog(self.root, get_device_id())
+            self.root.wait_window(auth_dialog.top)
+            if auth_dialog.result:
+                self.create_widgets()
+            else:
                 self.root.destroy()
-                return
-                
-            key = config.get("key", "")
-            # 如果没有KEY，显示认证对话框
-            if not key:
-                auth_dialog = AuthDialog(self.root, mac)
-                self.root.wait_window(auth_dialog.top)
-                if not auth_dialog.result:
-                    self.root.destroy()
-                    return
-        except Exception as e:
-            logger.error(f"Auth check failed: {e}")
-            messagebox.showerror("系统错误", f"认证检查失败: {str(e)}")
-            self.root.destroy()
-            return
+        elif check_res == AuthState.FAILED.value:
+            # Show error message and prompt for re-authentication
+            self.loading_label.destroy()
+            messagebox.showerror("认证失败", "认证信息错误，请重新认证")
+            auth_dialog = AuthDialog(self.root, get_device_id())
+            self.root.wait_window(auth_dialog.top)
+            if auth_dialog.result:
+                self.create_widgets()
+            else:
+                self.root.destroy()
+        else:
+            # Close the application if authentication fails
+            # Show error message and prompt for re-authentication
+            self.loading_label.destroy()
+            auth_dialog = AuthDialog(self.root, get_device_id())
+            self.root.wait_window(auth_dialog.top)
+            if auth_dialog.result:
+                self.create_widgets()
+            else:
+                self.root.destroy()
+
 
     def discover_bundled_models(self):
         """自动发现打包进来的模型"""
@@ -222,17 +267,46 @@ class VoiceFilterApp:
             return []
             
         cameras = []
+        cameras = self.get_camera_devices_windows()
+        if cameras:  # 如果有摄像头，则返回
+            return cameras
         for i in range(10):  # 检测前10个摄像头
             cap = cv2.VideoCapture(i)
             if cap.isOpened():
                 ret, _ = cap.read()
+                print(f"摄像头：{i} ===> {ret}")
                 if ret:
                     cameras.append((i, f"摄像头 {i}"))
                 cap.release()
         return cameras
+    
+    def get_camera_devices_windows(self):
+    # 1. 用 pygrabber 获取真实名称列表（基于 DirectShow）
+        try:
+            from pygrabber.dshow_graph import FilterGraph
+            device_names = FilterGraph().get_input_devices()
+        except Exception as e:
+            print("Failed to get camera names:", e)
+            device_names = []
+
+        cameras = []
+        # 2. 用 CAP_DSHOW 后端逐个测试
+        for i in range(len(device_names)):
+            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+            if cap.isOpened():
+                ret, frame = cap.read()
+                name = device_names[i] if i < len(device_names) else f"Unknown Camera {i}"
+                if ret and frame is not None and frame.size > 0:
+                    cameras.append((i, name))
+                cap.release()
+        return cameras
 
     def create_widgets(self):
-        # 标题
+        # Clear any existing widgets (in case of reload)
+        for widget in self.root.winfo_children():
+            widget.destroy()
+            
+        # Title
         title = tk.Label(self.root, text="抖音直播敏感词过滤器", font=("Arial", 14, "bold"))
         title.pack(pady=(10, 5))
 
@@ -320,7 +394,7 @@ class VoiceFilterApp:
         # 底部提示
         hint = tk.Label(self.root, text="使用前请安装 VB-Cable\n直播伴侣中选择 'CABLE Input' 作为麦克风", fg="gray")
         hint.pack(side='bottom', pady=(0,10))
-
+        
     def toggle_process(self):
         if not self.is_running:
             self.start_process()
@@ -339,7 +413,7 @@ class VoiceFilterApp:
 
             self.input_idx = self.input_idx_map[input_name]
             self.output_idx = self.output_idx_map[output_name]
-           
+            
             
             # Output all selected device indices
             logger.info(f"Selected input device index: {self.input_idx}")
@@ -383,7 +457,7 @@ class VoiceFilterApp:
         # 占位函数：停止处理流程
         self.is_running = False
         # Also update the is_running flag in claude_plan module
-        claude_plan.is_running = False
+         
         stop_event.set()
         logger.info("Stop process requested")
         
@@ -400,19 +474,35 @@ class VoiceFilterApp:
         logger.info("Process stopped")
 
     def run_filter(self):
+        logger.info(f"self.input_idx_map : {self.input_idx_map}")
+        audio_input_device_index = self.input_idx_map[self.input_combo.get()]
+        logger.info(f"audio_input_device_index：{self.input_idx_map[self.input_combo.get()]}")
+        
+        # Check authentication before starting the filter
+
+        check_res = self.cable_auth()
+        if check_res == AuthState.UNBIND.value:
+            logger.info("未注册")
+            # If authentication fails, stop the process and return
+            self.is_running = False
+            self.start_btn.config(text="▶ 启动过滤", state='normal', fg="black")
+            messagebox.showerror("认证失败", "认证未通过，无法启动过滤功能")
+            self.is_running = False
+            return
+            
         # 初始化队列
         self.audio_queue = Queue()
         video_queue = Queue()  # Changed to PriorityQueue for better ordering
         audio_queue = Queue()
         
         # Reset the is_running flag in claude_plan before starting threads
-        claude_plan.is_running = True
+         
         stop_event.clear()
  
         start_time = time.time() + 10.0
         # 创建音频处理进程，使用从claude_plan导入的函数
         self.audio_processes = []
-        capture_audio_process = Process(target=process_capture_audio, name="AudioCapture" ,args=(audio_queue, start_time, stop_event))
+        capture_audio_process = Process(target=process_capture_audio, name="AudioCapture" ,args=(audio_queue, start_time, stop_event, audio_input_device_index))
         send_audio_process = Process(target=process_send_audio_frames, name="AudioProcessor",args=(audio_queue, start_time, stop_event) )
         self.audio_processes.extend([capture_audio_process, send_audio_process])
         # 启动视频进程（如果启用）
@@ -422,7 +512,7 @@ class VoiceFilterApp:
         # 如果启用了视频功能，则创建视频处理进程
         self.video_processes = []
         if CV2_AVAILABLE and self.video_output_var.get():
-            capture_video_process = Process(target=process_capture_video_frames, name="VideoCapture",args=(video_queue, start_time, stop_event))
+            capture_video_process = Process(target=process_capture_video_frames, name="VideoCapture",args=(video_queue, start_time, stop_event,self.camera_idx_map[self.camera_combo.get()]))
             send_video_process = Process(target=process_send_video_frames, name="VideoSender",args=(video_queue, start_time, stop_event))
             self.video_processes.extend([capture_video_process, send_video_process])
             # 更新视频状态
@@ -459,7 +549,7 @@ class VoiceFilterApp:
         except Exception as e:
             logger.info("Interrupted by user, stopping processes...")
             self.is_running = False
-            claude_plan.is_running = False
+             
             # 等待进程结束
             capture_audio_process.join()
             send_audio_process.join()
@@ -501,27 +591,96 @@ class VoiceFilterApp:
             # 等待线程结束（最多2秒）
         if self.process_thread and self.process_thread.is_alive():
             self.process_thread.join(timeout=2.0)
-        for process in self.video_processes:
-            logger.warning(f"Terminating stuck process: {process.name}")
-            if process is not None and  process.is_alive():  # 确保进程已启动
-                process.terminate()
-                process.join(timeout=1.0)
-                if process.is_alive():  # 确保进程已终止
-                    logger.error(f"Failed to terminate process: {process.name}")
-        for process in self.audio_processes:
-            logger.warning(f"Terminating stuck process: {process.name}")
-            if process is not None and  process.is_alive():  # 确保进程已启动
-                process.terminate()
-                process.join(timeout=1.0)
-                if process.is_alive():  # 确保进程已终止
-                    logger.error(f"Failed to terminate process: {process.name}")
-          
+        if self.video_processes:
+            for process in self.video_processes:
+                logger.warning(f"Terminating stuck process: {process.name}")
+                if process is not None and  process.is_alive():  # 确保进程已启动
+                    process.terminate()
+                    process.join(timeout=1.0)
+                    if process.is_alive():  # 确保进程已终止
+                        logger.error(f"Failed to terminate process: {process.name}")
+        if self.audio_processes:
+            for process in self.audio_processes:
+                logger.warning(f"Terminating stuck process: {process.name}")
+                if process is not None and  process.is_alive():  # 确保进程已启动
+                    process.terminate()
+                    process.join(timeout=1.0)
+                    if process.is_alive():  # 确保进程已终止
+                        logger.error(f"Failed to terminate process: {process.name}")
+            
         self.p.terminate()
         self.root.destroy()
         logger.info("Application closed")
 
+    # def check_auth(self):
+    #     """检查认证状态"""
+    #     try:
+    #         # config = read_auth_config()
+    #         config = {"mac":"mac","key":"key"}
+
+    #         mac = config.get("mac", "")
+            
+    #         # 如果没有MAC地址，显示系统错误
+    #         if not mac:
+    #             messagebox.showerror("系统错误", "无法获取设备标识，程序无法使用")
+    #             return False
+                
+    #         key = config.get("key", "")
+    #         # 如果没有KEY，显示认证对话框
+    #         if not key:
+    #             # 显示认证对话框
+    #             try:
+    #                 auth_dialog = AuthDialog(self.root, mac)
+    #                 self.root.wait_window(auth_dialog.top)
+    #                 return auth_dialog.result or False
+    #             except Exception as e:
+    #                 # 如果认证对话框出现异常，显示错误
+    #                 messagebox.showerror("系统错误", f"认证对话框出错: {str(e)}")
+    #                 return False
+    #         else:
+    #             # 有KEY，尝试自动认证
+    #             try:
+    #                 auth_url = f"{BASE_URL}/xjt_auth"  # 实际使用时替换为正确的URL
+    #                 response = requests.post(auth_url, json={"key": key, "mac": mac})
+                    
+    #                 if response.status_code == 200:
+    #                     result = response.json()
+    #                     if result.get("code") == 200:
+    #                         return True
+    #                     else:
+    #                         # 认证失败，显示认证对话框
+    #                         messagebox.showerror("认证过期", "之前的认证已失效，请重新认证")
+    #                         auth_dialog = AuthDialog(self.root, mac)
+    #                         self.root.wait_window(auth_dialog.top)
+    #                         return auth_dialog.result or False
+    #                 else:
+    #                     messagebox.showerror("网络错误", f"认证检查失败: {response.status_code}，请重新认证")
+    #                     auth_dialog = AuthDialog(self.root, mac)
+    #                     self.root.wait_window(auth_dialog.top)
+    #                     return auth_dialog.result or False
+    #             except Exception as e:
+    #                 messagebox.showerror("网络错误", f"无法连接到认证服务器: {str(e)}，请检查网络后重试")
+    #                 auth_dialog = AuthDialog(self.root, mac)
+    #                 self.root.wait_window(auth_dialog.top)
+    #                 return auth_dialog.result or False
+               
+    #     except Exception as e:
+    #         logger.error(f"Auth check failed: {e}")
+    #         messagebox.showerror("系统错误", f"认证检查失败: {str(e)}")
+    #         return False
+
 if __name__ == "__main__":
+    # Add freeze support check to prevent multiple windows on startup
+    from multiprocessing import freeze_support
+    freeze_support()
+    
     root = tk.Tk()
     app = VoiceFilterApp(root)
-    root.protocol("WM_DELETE_WINDOW", app.on_closing)
-    root.mainloop()
+    # Only set the protocol if the root window still exists (not destroyed during auth)
+    try:
+        if root.winfo_exists():
+            root.protocol("WM_DELETE_WINDOW", app.on_closing)
+            root.mainloop()
+    except tk.TclError:
+        # Application was destroyed during authentication, exit gracefully
+        pass
