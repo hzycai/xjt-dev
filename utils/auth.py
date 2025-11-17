@@ -3,14 +3,14 @@ import json
 import uuid
 from pathlib import Path
 import requests
-from util import resource_path, write_bin_file, read_bin_file, calculate_auth_hash, AuthState
+from util import resource_path, write_bin_file, read_bin_file, calculate_auth_hash, AuthState, BASE_URL
 from utils import get_logger
-import platform
+ 
 
 logger = get_logger()
 
 # Define the URL for the HTTP request
-AUTH_URL = "http://127.0.0.1:5000"  # Replace with actual URL
+ 
 default_config_path="config/auth.bin"
 # Define authentication states enumeration
 
@@ -88,7 +88,7 @@ def check_auth():
         write_bin_file(config_path, json.dumps({"device_id": device_id}).encode("utf-8"))
         logger.info(f"Created auth configuration file at {config_path}")
 
-        register_url = AUTH_URL + "/register_user"
+        register_url = BASE_URL + "/register_user"
         # 修改注册请求体，使用mac而不是device_id
         register_body = {"mac": device_id}
         try:
@@ -113,7 +113,7 @@ def check_auth():
 
         # Step 2: Request file info and hash from server
         device_id = device_info.get("device_id")
-        get_user_file_info_url = AUTH_URL + "/get_user_file_info"
+        get_user_file_info_url = BASE_URL + "/get_user_file_info"
         try:
             response = requests.get(get_user_file_info_url, params={"mac": device_id})
             if response.status_code != 200:
@@ -129,6 +129,10 @@ def check_auth():
                 # User exists but no file_path or hash
                 logger.error("User exists but file info is incomplete")
                 return AuthState.UNBIND.value
+            elif file_info_data['code'] == 502:
+                # USER fobbidden
+                logger.error("User exists but fobbidden")
+                return AuthState.FOBBIDDEN.value
             elif file_info_data['code'] == 200:
                 # Successfully retrieved file info and hash
                 logger.info(f"Successfully retrieved user file info:{file_info_data}")

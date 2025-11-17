@@ -1,5 +1,4 @@
-import os
-import sys
+
 from loguru import logger
 from util import resource_path
 _logger = None

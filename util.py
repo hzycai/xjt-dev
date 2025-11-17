@@ -3,16 +3,20 @@ import sys
 import os
 from cryptography.fernet import Fernet
 import json
-import uuid
 import hashlib
 from enum import Enum
+from utils.download_file import download_file
+
 class AuthState(Enum):
     UNREGISTERED = 0
     SUCCESS = 1
     FAILED = 2
     UNBIND = 3
+    FOBBIDDEN = 4   
 
-
+# BASE_URL = "http://127.0.0.1:5000"
+BASE_URL = "https://cfapi.hzycai.com"
+sen_words_version_file_path="config/version.json"
 key = b'Ephk5rl57rcgpWohYOzpSU7RM4-7vb0Xdm6m47eU_GU='
 def resource_path(relative_path):
     if getattr(sys, 'frozen', False):
@@ -60,3 +64,95 @@ def calculate_auth_hash(uuid_list, user_key):
     sorted_uuid_string = ''.join(sorted(uuid_list))
     hash_input = sorted_uuid_string + user_key
     return hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
+
+
+def load_sensitive_words(mac):
+    
+    """
+        version.json内容格式：{"version": 1}
+    """
+    file_path = resource_path(sen_words_version_file_path)
+    # Check if the directory of the file path exists, create it if not
+    directory = os.path.dirname(file_path)
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+    
+    # If the file exists, load JSON data from it
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            data  =  json.loads(content)
+            version = int(data['version'])
+        except (json.JSONDecodeError, IOError):
+            # Return None or handle error appropriately if JSON is invalid or file can't be read
+            version = -1
+    else:
+        version = -1
+
+    # Request sensitive words and version information from server
+    import requests
+    try:
+        response = requests.get(f"{BASE_URL}/get_words_and_version", params={
+            "version": version,
+            "mac": mac
+        })
+        response.raise_for_status()
+        result = response.json()
+        
+        if result.get("code") == 200:
+            data = result.get("data", {})
+            remote_version = data.get("version", -1)
+            words = data.get("words", [])
+            file_url = data.get("file_url")
+            
+            # Save sensitive words to file
+            sensitive_words_path = resource_path("config/sensitive_words.txt")
+            
+            # If versions match, load local file
+            if version == remote_version:
+                if os.path.exists(sensitive_words_path):
+                    return load_sensitive_words_file(sensitive_words_path, words)
+            # If versions don't match and we have a file URL, download new file
+            elif file_url:
+                try:
+                    if download_file(file_url,sensitive_words_path):
+                        with open(file_path, "w", encoding="utf-8") as f:
+                            f.write(json.dumps({"version": remote_version}))
+                        return load_sensitive_words_file(sensitive_words_path, words)
+                except Exception as e:
+                    print(f"Failed to download sensitive words file: {e}")
+            else:
+                 return None
+        else:
+            print(f"Server returned error: {result.get('msg', 'Unknown error')}")
+            return None
+            
+    except requests.RequestException as e:
+        print(f"Failed to request sensitive words: {e}")
+        return None
+    
+
+def load_sensitive_words_file(sensitive_words_file, words):
+    """Load sensitive words from file"""
+    sensitive_set = set()
+    try:
+        # Try to load sensitive words from external file
+        with open(sensitive_words_file, "r", encoding="utf-8") as f:
+            for line in f:
+                word = line.strip()
+                if word:  # Ignore empty lines
+                    sensitive_set.add(word)
+        print(f"Loaded {len(sensitive_set)} sensitive words from file: {sensitive_words_file}")
+    except FileNotFoundError:
+        # If file doesn't exist, use default sensitive words
+        print("sensitive_words.txt not found, using default sensitive words")
+        return None
+    except Exception as e:
+        print(f"Error loading sensitive words: {e}")
+        # Use default sensitive words in case of error
+        return None
+    
+    sensitive_set.update(words)
+         
+    return sensitive_set

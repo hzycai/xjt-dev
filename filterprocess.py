@@ -1,17 +1,12 @@
 import time
 import queue
-import threading
 from dataclasses import dataclass
 from funasr import AutoModel
 import pyaudio
-import sys
 import cv2
 import pyvirtualcam
 import numpy as np
-import os
-import signal
 from utils.logger import get_logger
-from multiprocessing import  Queue
 from util import resource_path 
 logger = get_logger()
  
@@ -24,12 +19,7 @@ class MediaFrame:
 
 def now_sec() -> float:
     return time.monotonic()
-
-# video_queue = queue.Queue()  # Changed to PriorityQueue for better ordering
-# audio_queue = queue.Queue()
-
-# video_queue = Queue()  # Changed to PriorityQueue for better ordering
-# audio_queue = Queue()
+ 
 is_running = True
 start_time = None  # Unified start time reference
 delay_t = 2.0
@@ -52,23 +42,16 @@ def init_model():
     logger.info("Speech recognition model initialized successfully")
     return model
 
-def init_video_cam(camera_index):
+def init_video_cam(camera_index,w,h,fps):
     try:    
         logger.info("Initializing video capture device")
-        # cap = cv2.VideoCapture(0)
-        # if not cap.isOpened():
-        #     logger.error("Cannot open camera 0")
-        
-        # # 设置摄像头分辨率
-        # cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        # cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+     
 
         cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-
-        # 设置常见分辨率（先试 1080p30）
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-        cap.set(cv2.CAP_PROP_FPS, 30)
+        # 设置摄像头分辨率
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+        cap.set(cv2.CAP_PROP_FPS, fps)
 
         # 关键：设置像素格式为 YUY2（大多数 UVC 采集设备默认格式）
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('Y', 'U', 'Y', '2'))
@@ -76,6 +59,7 @@ def init_video_cam(camera_index):
         return cap
     except Exception as e:
         logger.error(f"Failed to initialize video capture: {e}")
+        return None
        
                 
 def init_audio_mic(audio_input_device_index):
@@ -99,6 +83,7 @@ def init_audio_mic(audio_input_device_index):
         return audio_stream_in
     except Exception as e:
         logger.error(f"Failed to initialize audio input stream: {e}")
+        return None
        
 
 def init_audio_output():
@@ -115,7 +100,6 @@ def init_audio_output():
                 output_idx = i
                 logger.info(f"Found VB-Cable output device: {dev['name']} (index {i})")
                 break
-        
         # If no VB-Cable device found, use first available output device
         if output_idx is None:
             logger.warning("VB-Cable device not found, searching for alternative output device")
@@ -128,7 +112,6 @@ def init_audio_output():
         
         if output_idx is None:
             raise Exception("No output device found")
-        
         device_info = p.get_device_info_by_index(output_idx)
         output_rate = int(device_info['defaultSampleRate'])
 
@@ -145,12 +128,13 @@ def init_audio_output():
     except Exception as e:
         logger.error(f"Failed to initialize audio output stream: {e}")
         
-def process_capture_video_frames(video_queue, start_time, stop_event, camera_index):
+        
+def process_capture_video_frames(video_queue, start_time, stop_event, camera_index,width,height, fps):
     # Thread 1: Process video frames
     # TODO: Add video processing logic here
     logger.info("Starting video capture thread")
     logger.info(f"Camera index: {camera_index}")
-    cap = init_video_cam(camera_index)  # Get the video capture object
+    cap = init_video_cam(camera_index,width,height, fps)  # Get the video capture object
     while time.time() < start_time :
         time.sleep(0.01)
     try:
@@ -173,7 +157,7 @@ def process_capture_video_frames(video_queue, start_time, stop_event, camera_ind
             cap.release()
         logger.info(f"Video capture thread stopped. ")
 
-def process_send_video_frames(video_queue, start_time, stop_event):
+def process_send_video_frames(video_queue, start_time, stop_event,width,height, fps):
     # Thread 1: Process video frames
     # TODO: Add video processing logic here
     logger.info("Starting video sending thread")
@@ -183,7 +167,7 @@ def process_send_video_frames(video_queue, start_time, stop_event):
         time.sleep(0.01)
  
     try:
-        with pyvirtualcam.Camera(width=1280, height=720, fps=30) as cam:
+        with pyvirtualcam.Camera(width=width, height=height, fps=fps) as cam:
             logger.info("Virtual camera initialized successfully")
             # while is_running:
             while not stop_event.is_set():
@@ -222,36 +206,7 @@ def process_send_video_frames(video_queue, start_time, stop_event):
     finally:
         logger.info("stop video sending thread")
 
-def load_sensitive_words():
-    """Load sensitive words from file"""
-    sensitive_set = set()
-    try:
-        # Try to load sensitive words from config directory
-        config_path = "config"
-        if not os.path.exists(config_path):
-            os.makedirs(config_path)
-            logger.info(f"Created config directory: {config_path}")
-        # sensitive_words_file = os.path.join(config_path, "sensitive_words.txt")
-        sensitive_words_file =  resource_path("config/sensitive_words.txt")
 
-        
-        # Try to load sensitive words from external file
-        with open(sensitive_words_file, "r", encoding="utf-8") as f:
-            for line in f:
-                word = line.strip()
-                if word:  # Ignore empty lines
-                    sensitive_set.add(word)
-        logger.info(f"Loaded {len(sensitive_set)} sensitive words from file: {sensitive_words_file}")
-    except FileNotFoundError:
-        # If file doesn't exist, use default sensitive words
-        logger.warning("sensitive_words.txt not found, using default sensitive words")
-        sensitive_set = {"微信", "VX", "赚钱", "最便宜", "稳赚", " guaranteed", "绝对", "第一"}
-    except Exception as e:
-        logger.error(f"Error loading sensitive words: {e}")
-        # Use default sensitive words in case of error
-        sensitive_set = {"微信", "VX", "赚钱", "最便宜", "稳赚", " guaranteed", "绝对", "第一"}
-    logger.info("loaded sensitive words successfully")
-    return sensitive_set
 def output_audio_to_vb_cable(audio_data, vb_cable_stream, input_rate, output_rate):
         """
         将音频数据输出到VB-Cable输出流，并进行重采样
@@ -320,7 +275,7 @@ def process_send_audio_frames(audio_queue, start_time, stop_event):
         logger.info("Stopping audio send thread")
     
 
-def process_capture_audio(audio_queue, start_time, stop_event, audio_input_device_index ):
+def process_capture_audio(audio_queue, start_time, stop_event, audio_input_device_index , sensitive_set):
     # Initialize audio input stream
     logger.info("Starting audio capture thread")
     INPUT_RATE = 16000
@@ -328,7 +283,6 @@ def process_capture_audio(audio_queue, start_time, stop_event, audio_input_devic
     audio_stream_in = init_audio_mic(audio_input_device_index)
     model = init_model()
     audio_stream_out = init_audio_output()
-    sensitive_set = load_sensitive_words()
     # Buffer to accumulate audio data
     audio_buffer = np.array([], dtype=np.float32)
     # Target duration in seconds
@@ -344,8 +298,6 @@ def process_capture_audio(audio_queue, start_time, stop_event, audio_input_devic
              
             if timestamp is None:
                 timestamp = now_sec()
-                print(f"开始音频采集{timestamp}")
-
             # Read audio chunk
             try:
                 data = audio_stream_in.read(CHUNK, exception_on_overflow=False)
@@ -377,6 +329,7 @@ def process_capture_audio(audio_queue, start_time, stop_event, audio_input_devic
                             found_sensitive_words.append(word)
                             logger.warning(f"Sensitive word detected: {word}")
                             print(f"⚠️  Warning: Sensitive word detected: {word}")
+                            break
                              
                 if found_sensitive_words:
                     # Create beep sound with same duration as original audio                                      

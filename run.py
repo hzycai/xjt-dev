@@ -1,6 +1,7 @@
 # run.py
 import tkinter as tk
 from tkinter import ttk, messagebox
+from tkinter import font as tkFont
 import threading
 import pyaudio
 from multiprocessing import Process, Queue, Event 
@@ -16,18 +17,19 @@ from filterprocess import (
     process_send_audio_frames,
     # 新增导入视频相关的函数
     process_capture_video_frames,
-    process_send_video_frames
+    process_send_video_frames,
+    init_audio_mic,
+    init_audio_output,
+    init_video_cam
 )
-
-from util import AuthState
+from util import AuthState, BASE_URL, load_sensitive_words
 
 # 导入认证相关模块
 # from utils.auth import read_auth_config, send_auth_request
 import requests
-import json
+ 
 
-
-
+ 
 # 尝试导入 faster-whisper（打包后也能工作）
 try:
     WHISPER_AVAILABLE = True
@@ -50,10 +52,7 @@ except ImportError:
 logger = get_logger()
 
 stop_event =  Event() 
-
-BASE_URL = "http://127.0.0.1:5000"
-# BASE_URL = "https://cfapi.hzycai.com"
-
+font_name = None
 
 # 获取资源路径（兼容打包后和开发环境）
 def resource_path(relative_path):
@@ -74,6 +73,14 @@ class AuthDialog:
         self.top.transient(parent)
         self.top.grab_set()
         
+        # Set window icon
+        try:
+            icon_path = resource_path("res/favicon.ico")
+            if os.path.exists(icon_path):
+                self.top.iconbitmap(icon_path)
+        except Exception as e:
+            logger.warning(f"Failed to load icon for AuthDialog: {e}")
+        
         # 居中显示
         self.top.update_idletasks()
         x = (self.top.winfo_screenwidth() // 2) - (400 // 2)
@@ -83,13 +90,13 @@ class AuthDialog:
         # 显示MAC地址
         mac_frame = tk.Frame(self.top)
         mac_frame.pack(pady=10)
-        tk.Label(mac_frame, text="设备号:", font=("Arial", 10)).pack()
-        tk.Label(mac_frame, text=mac, font=("Arial", 10, "bold"), fg="blue").pack()
+        tk.Label(mac_frame, text="设备号:", font=(font_name, 10)).pack()
+        tk.Label(mac_frame, text=mac, font=(font_name, 10, "bold"), fg="blue").pack()
         
         # 输入KEY
         key_frame = tk.Frame(self.top)
         key_frame.pack(pady=10)
-        tk.Label(key_frame, text="请输入您的产品密钥:", font=("Arial", 10)).pack(pady=(0, 5))
+        tk.Label(key_frame, text="请输入您的产品密钥:", font=(font_name, 10)).pack(pady=(0, 5))
         self.key_entry = tk.Entry(key_frame, width=30, show="*")
         self.key_entry.pack()
         self.key_entry.focus()
@@ -103,7 +110,6 @@ class AuthDialog:
         # 绑定回车键
         self.key_entry.bind('<Return>', lambda event: self.submit_auth())
         self.result = None
-    
         
     def submit_auth(self):
         key = self.key_entry.get().strip()
@@ -117,10 +123,7 @@ class AuthDialog:
         
         try:
             # 读取配置获取MAC地址
-            # config = read_auth_config()
-            # mac = config.get("mac", "")
-            config = {"mac":"mac","key":"key"}
-
+            
             mac = get_device_id()
             
             # 发送认证请求
@@ -169,13 +172,24 @@ class VoiceFilterApp:
     def __init__(self, root):
         self.root = root
         self.root.title("直播敏感词过滤器")
-        self.root.geometry("480x500")  # Set size first
+
+        # Calculate new dimensions: increase height by 20%
+        original_height = 550
+        new_height = int(original_height * 1.2)  # 660 pixels
+        x = (self.root.winfo_screenwidth() // 2) - (480 // 2)
+        y = (self.root.winfo_screenheight() // 2) - (new_height // 2)  # Adjusted for new height
+        self.root.geometry(f"480x{new_height}+{x}+{y}")  # Updated geometry
+        
+        # self.root.geometry(f"480x{new_height}")  # Changed from 480x550 to 480x660
         self.root.resizable(False, False)
         
-        # Calculate center position and set geometry BEFORE showing window
-        x = (self.root.winfo_screenwidth() // 2) - (480 // 2)
-        y = (self.root.winfo_screenheight() // 2) - (500 // 2)
-        self.root.geometry(f"480x500+{x}+{y}")
+        # Set window icon
+        try:
+            icon_path = resource_path("res/favicon.ico")
+            if os.path.exists(icon_path):
+                self.root.iconbitmap(icon_path)
+        except Exception as e:
+            logger.warning(f"Failed to load icon: {e}")
         
         # Show loading message immediately
         self.loading_label = tk.Label(root, text="系统初始化中...", font=("", 14))
@@ -199,7 +213,6 @@ class VoiceFilterApp:
 
         self.p = pyaudio.PyAudio()
      
-        self.model_sizes = self.discover_bundled_models()
         check_res = check_auth()
         # Check authentication before creating widgets
         if check_res==AuthState.SUCCESS.value:
@@ -226,6 +239,12 @@ class VoiceFilterApp:
                 self.create_widgets()
             else:
                 self.root.destroy()
+        elif check_res == AuthState.FOBBIDDEN.value:
+            # Show error message and exit when user is disabled
+            self.loading_label.destroy()
+            messagebox.showerror("账户禁用", "您的账户已被禁用，程序将退出")
+            self.root.destroy()
+            return
         else:
             # Close the application if authentication fails
             # Show error message and prompt for re-authentication
@@ -237,23 +256,11 @@ class VoiceFilterApp:
             else:
                 self.root.destroy()
 
-
-    def discover_bundled_models(self):
-        """自动发现打包进来的模型"""
-        models_dir = resource_path("models")
-        if not os.path.exists(models_dir):
-            return ["base"]  # fallback
-        
-        available = []
-        for model_name in ["base", "small", "medium"]:
-            if os.path.isdir(os.path.join(models_dir, model_name)):
-                available.append(model_name)
-        return available if available else ["base"]
-
     def get_devices(self, kind='input'):
         devices = []
         for i in range(self.p.get_device_count()):
             dev = self.p.get_device_info_by_index(i)
+      
             if kind == 'input' and dev['maxInputChannels'] > 0:
                 devices.append((i, dev['name']))
             elif kind == 'output' and dev['maxOutputChannels'] > 0:
@@ -274,14 +281,13 @@ class VoiceFilterApp:
             cap = cv2.VideoCapture(i)
             if cap.isOpened():
                 ret, _ = cap.read()
-                print(f"摄像头：{i} ===> {ret}")
                 if ret:
                     cameras.append((i, f"摄像头 {i}"))
                 cap.release()
         return cameras
     
     def get_camera_devices_windows(self):
-    # 1. 用 pygrabber 获取真实名称列表（基于 DirectShow）
+        # 1. 用 pygrabber 获取真实名称列表（基于 DirectShow）
         try:
             from pygrabber.dshow_graph import FilterGraph
             device_names = FilterGraph().get_input_devices()
@@ -301,13 +307,47 @@ class VoiceFilterApp:
                 cap.release()
         return cameras
 
+    # 新增函数：获取摄像头支持的分辨率和FPS
+    def get_camera_formats(self, device_index):
+        """获取指定摄像头支持的分辨率和FPS"""
+        try:
+            from pygrabber.dshow_graph import FilterGraph
+            graph = FilterGraph()
+            devices = graph.get_input_devices()
+            
+            if device_index >= len(devices):
+                return []
+                
+            # 设置该设备为当前输入源
+            graph.add_video_input_device(device_index)
+            
+            # 获取该设备支持的所有格式
+            formats = graph.get_input_device().get_formats()
+            # 提取唯一的分辨率和FPS组合
+            device_info = set()
+            fps = 0
+            for fmt in formats:
+                width = fmt.get('width', 0)
+                height = fmt.get('height', 0)
+                fps = fmt.get('max_framerate', 30)
+                device_info.add( 
+                        f"{width}x{height}"
+                     )
+            # 返回去重后的格式列表
+            # 修改:按分辨率从大到小排序
+            sorted_resolutions = sorted(list(device_info), key=lambda x: int(x.split('x')[0]) * int(x.split('x')[1]), reverse=True)
+            return sorted_resolutions, int(fps)
+        except Exception as e:
+            print(f"Failed to get camera formats: {e}")
+            return []
+
     def create_widgets(self):
         # Clear any existing widgets (in case of reload)
         for widget in self.root.winfo_children():
             widget.destroy()
-            
+        text = "\u2009".join("直播敏感词过滤器")    
         # Title
-        title = tk.Label(self.root, text="抖音直播敏感词过滤器", font=("Arial", 14, "bold"))
+        title = tk.Label(self.root, text=text, font=(font_name, 14 ))
         title.pack(pady=(10, 5))
 
         # Whisper 状态
@@ -352,25 +392,33 @@ class VoiceFilterApp:
             self.camera_combo = ttk.Combobox(self.root, values=self.camera_names, state="readonly")
             if self.camera_names:
                 self.camera_combo.current(0)
+                # 绑定选择事件，当选中摄像头时更新分辨率选项
+                self.camera_combo.bind('<<ComboboxSelected>>', self.on_camera_selected)
             self.camera_combo.pack(fill='x', padx=20, pady=5)
+            
+            # 视频分辨率和FPS选择（拆分为两个独立的下拉框）
+            tk.Label(self.root, text="视频分辨率:", anchor='w').pack(fill='x', padx=20, pady=(10,0))
+            self.resolution_combo = ttk.Combobox(self.root, state="readonly")
+            self.resolution_combo.pack(fill='x', padx=20, pady=5)
+            
+            tk.Label(self.root, text="视频FPS:", anchor='w').pack(fill='x', padx=20, pady=(10,0))
+            self.fps_combo = ttk.Combobox(self.root, state="readonly")
+            self.fps_combo.pack(fill='x', padx=20, pady=5)
+            
+            # 初始化分辨率和FPS选项
+            if self.camera_names:
+                self.update_resolution_options(0)
             
             # 视频输出选项（新增）
             self.video_output_var = tk.BooleanVar()
             video_output_check = tk.Checkbutton(self.root, text="启用视频输出（2秒延迟）", variable=self.video_output_var)
             video_output_check.pack(pady=5)
 
-        # # 模型选择
-        # tk.Label(self.root, text="Whisper 模型:", anchor='w').pack(fill='x', padx=20, pady=(10,0))
-        # self.model_var = tk.StringVar(value=self.model_sizes[0])
-        # model_combo = ttk.Combobox(self.root, textvariable=self.model_var, values=self.model_sizes, state="readonly")
-        # model_combo.pack(fill='x', padx=20, pady=5)
-        # model_tip = "• base: 低延迟，适合 CPU\n• small: 更准确，推荐 GPU"
-        # tk.Label(self.root, text=model_tip, fg="gray", justify='left').pack(anchor='w', padx=20)
-
-        # 启动按钮
+    
+        # 启动按钮 - decrease height by 1/3 (from 3 to 2)
         btn_frame = tk.Frame(self.root)
         btn_frame.pack(pady=20)
-        self.start_btn = tk.Button(btn_frame, text="▶ 启动过滤", command=self.toggle_process, width=15, height=2)
+        self.start_btn = tk.Button(btn_frame, text="▶ 启动过滤", command=self.toggle_process, width=15, height=2)  # Reduced height from 3 to 2
         self.start_btn.pack()
 
         # 状态栏
@@ -394,13 +442,11 @@ class VoiceFilterApp:
         # 底部提示
         hint = tk.Label(self.root, text="使用前请安装 VB-Cable\n直播伴侣中选择 'CABLE Input' 作为麦克风", fg="gray")
         hint.pack(side='bottom', pady=(0,10))
-        
     def toggle_process(self):
         if not self.is_running:
             self.start_process()
         else:
             self.stop_process()
-
     def start_process(self):
         # 占位函数：启动处理流程
         try:
@@ -413,7 +459,6 @@ class VoiceFilterApp:
 
             self.input_idx = self.input_idx_map[input_name]
             self.output_idx = self.output_idx_map[output_name]
-            
             
             # Output all selected device indices
             logger.info(f"Selected input device index: {self.input_idx}")
@@ -457,10 +502,8 @@ class VoiceFilterApp:
         # 占位函数：停止处理流程
         self.is_running = False
         # Also update the is_running flag in claude_plan module
-         
         stop_event.set()
         logger.info("Stop process requested")
-        
         # Update button to show stopping state
         self.start_btn.config(state='disabled', text="⏹ 停止中...", fg="gray")
         
@@ -473,97 +516,156 @@ class VoiceFilterApp:
         self.start_btn.config(text="▶ 启动过滤", state='normal', fg="black")
         logger.info("Process stopped")
 
+    def check_device_available(self,audio_input_device_index, camera_idx,w,h,fps):
+        audio_input = init_audio_mic(audio_input_device_index)
+        audio_output = init_audio_output()
+        cam = init_video_cam(camera_idx,w,h,fps)
+        msg = None
+        ret = True
+        if audio_input is None:
+            msg = '音频输入设备检测失败'
+            ret = False
+            logger.error(msg)
+        else:
+            logger.info("音频输入设备检测成功")
+            audio_input.close()
+        if audio_output is None:
+            msg = '音频输出设备检测失败'
+            ret = False
+            logger.error(msg)
+        else:
+            logger.info("音频输出设备检测成功")
+            audio_output.close()
+        if cam is None:
+            msg = '视频输入设备检测失败'
+            ret = False
+            logger.error("视频输入设备检测失败")
+        else:
+            logger.info("视频输入设备检测成功")
+            if cam.isOpened():  # Check if the video capture is open
+                cam.release()
+        return ret, msg
+
     def run_filter(self):
         logger.info(f"self.input_idx_map : {self.input_idx_map}")
         audio_input_device_index = self.input_idx_map[self.input_combo.get()]
         logger.info(f"audio_input_device_index：{self.input_idx_map[self.input_combo.get()]}")
+        # 获取选中的分辨率字符串 (例如: "640x480")
+        selected_resolution = self.resolution_combo.get()
+        logger.info(f"selected_resolution: {selected_resolution}")
+        if 'x' in selected_resolution:
+            width, height = map(int, selected_resolution.split('x'))
+        else:
+            width, height = 640, 480
+        # 获取选中的FPS字符串 (例如: "30")
+        selected_fps = self.fps_combo.get()
+        logger.info(f"selected_fps: {selected_fps}")
         
-        # Check authentication before starting the filter
-
-        check_res = self.cable_auth()
-        if check_res == AuthState.UNBIND.value:
-            logger.info("未注册")
-            # If authentication fails, stop the process and return
-            self.is_running = False
-            self.start_btn.config(text="▶ 启动过滤", state='normal', fg="black")
-            messagebox.showerror("认证失败", "认证未通过，无法启动过滤功能")
+        # check device available
+        ret, msg = self.check_device_available(audio_input_device_index, self.camera_idx_map[self.camera_combo.get()], width, height ,int(selected_fps))
+        if not ret:
+            messagebox.showerror("错误", msg)
+            # Update UI status
+            self.start_btn.config(text="▶ 启动过滤", state='normal')
+            self.mic_status.config(text="🎤 麦克风: 未连接", fg="gray")
+            self.filter_status.config(text="🔍 过滤: 未运行", fg="gray")
+            if CV2_AVAILABLE:
+                self.video_status.config(text="📹 视频: 未运行", fg="gray")
             self.is_running = False
             return
-            
-        # 初始化队列
-        self.audio_queue = Queue()
-        video_queue = Queue()  # Changed to PriorityQueue for better ordering
-        audio_queue = Queue()
-        
-        # Reset the is_running flag in claude_plan before starting threads
-         
-        stop_event.clear()
- 
-        start_time = time.time() + 10.0
-        # 创建音频处理进程，使用从claude_plan导入的函数
-        self.audio_processes = []
-        capture_audio_process = Process(target=process_capture_audio, name="AudioCapture" ,args=(audio_queue, start_time, stop_event, audio_input_device_index))
-        send_audio_process = Process(target=process_send_audio_frames, name="AudioProcessor",args=(audio_queue, start_time, stop_event) )
-        self.audio_processes.extend([capture_audio_process, send_audio_process])
-        # 启动视频进程（如果启用）
-        for process in self.audio_processes:
-            logger.info(f"Starting audio process: {process.name}")
-            process.start()
-        # 如果启用了视频功能，则创建视频处理进程
-        self.video_processes = []
-        if CV2_AVAILABLE and self.video_output_var.get():
-            capture_video_process = Process(target=process_capture_video_frames, name="VideoCapture",args=(video_queue, start_time, stop_event,self.camera_idx_map[self.camera_combo.get()]))
-            send_video_process = Process(target=process_send_video_frames, name="VideoSender",args=(video_queue, start_time, stop_event))
-            self.video_processes.extend([capture_video_process, send_video_process])
-            # 更新视频状态
-            self.video_status.config(text="📹 视频: 运行中", fg="green")
-        
-        # 更新状态
-        self.mic_status.config(text="🎤 麦克风: 运行中", fg="green")
-        self.filter_status.config(text="🔍 过滤: 运行中", fg="green")
-        
-        
-        # 启动视频进程（如果启用）
-        for process in self.video_processes:
-            logger.info(f"Starting video process: {process.name}")
-            process.start()
-        
-        # 等待进程完成
-        try:
-            while self.is_running  :
-                time.sleep(0.1)
-            for process in self.video_processes:
-                logger.warning(f"Terminating stuck process: {process.name}")
-                if process is not None and  process.is_alive():  # 确保进程已启动
-                    process.terminate()
-                    process.join(timeout=1.0)
-                    if process.is_alive():  # 确保进程已终止
-                        logger.error(f"Failed to terminate process: {process.name}")
-            for process in self.audio_processes:
-                logger.warning(f"Terminating stuck process: {process.name}")
-                if process is not None and  process.is_alive():  # 确保进程已启动
-                    process.terminate()
-                    process.join(timeout=1.0)
-                    if process.is_alive():  # 确保进程已终止
-                        logger.error(f"Failed to terminate process: {process.name}")
-        except Exception as e:
-            logger.info("Interrupted by user, stopping processes...")
-            self.is_running = False
-             
-            # 等待进程结束
-            capture_audio_process.join()
-            send_audio_process.join()
-            for process in self.video_processes:
-                process.join()
-        
-        # 更新状态
-        self.mic_status.config(text="🎤 麦克风: 已停止", fg="gray")
-        self.filter_status.config(text="🔍 过滤: 已停止", fg="gray")
-        if CV2_AVAILABLE:
-            self.video_status.config(text="📹 视频: 已停止", fg="gray")
-        
-        logger.info("Audio processing shutdown complete")
+        # Check authentication before starting the filter
 
+        check_res = check_auth()
+        if check_res == AuthState.FOBBIDDEN.value:
+            # Show error message and exit when user is disabled
+            self.loading_label.destroy()
+            messagebox.showerror("账户禁用", "您的账户已被禁用，程序将退出")
+            self.root.destroy()
+            return
+        if check_res is not AuthState.SUCCESS.value:
+            logger.info("认证失败")
+   
+            self.loading_label.destroy()
+            messagebox.showerror("认证失败", "认证信息错误，请重新认证")
+            auth_dialog = AuthDialog(self.root, get_device_id())
+            self.root.wait_window(auth_dialog.top)
+            if auth_dialog.result:
+                self.create_widgets()
+            else:
+                self.root.destroy()
+        else:                
+            # 初始化队列
+            self.audio_queue = Queue()
+            video_queue = Queue()  # Changed to PriorityQueue for better ordering
+            audio_queue = Queue()
+            # Reset the is_running flag in claude_plan before starting threads
+            stop_event.clear()
+            start_time = time.time() + 10.0
+            # 创建敏感词集合
+            sensitive_set = load_sensitive_words(get_device_id())
+            logger.info(f"load sensitive words success,words size : {len(sensitive_set)}")
+            # 创建音频处理进程，使用从claude_plan导入的函数
+            self.audio_processes = []
+            capture_audio_process = Process(target=process_capture_audio, name="AudioCapture" ,args=(audio_queue, start_time, stop_event, audio_input_device_index,sensitive_set))
+            send_audio_process = Process(target=process_send_audio_frames, name="AudioProcessor",args=(audio_queue, start_time, stop_event) )
+            self.audio_processes.extend([capture_audio_process, send_audio_process])
+            # 启动视频进程（如果启用）
+            for process in self.audio_processes:
+                logger.info(f"Starting audio process: {process.name}")
+                process.start()
+            # 如果启用了视频功能，则创建视频处理进程
+            self.video_processes = []
+            if CV2_AVAILABLE and self.video_output_var.get():
+                capture_video_process = Process(target=process_capture_video_frames, name="VideoCapture",args=(video_queue, start_time, stop_event,self.camera_idx_map[self.camera_combo.get()], width, height,int(selected_fps)))
+                send_video_process = Process(target=process_send_video_frames, name="VideoSender",args=(video_queue, start_time, stop_event, width, height,int(selected_fps)))
+                self.video_processes.extend([capture_video_process, send_video_process])
+                # 更新视频状态
+                self.video_status.config(text="📹 视频: 运行中", fg="green")
+            
+            # 更新状态
+            self.mic_status.config(text="🎤 麦克风: 运行中", fg="green")
+            self.filter_status.config(text="🔍 过滤: 运行中", fg="green")
+            
+            # 启动视频进程（如果启用）
+            for process in self.video_processes:
+                logger.info(f"Starting video process: {process.name}")
+                process.start()
+            
+            # 等待进程完成
+            try:
+                while self.is_running  :
+                    time.sleep(0.1)
+                for process in self.video_processes:
+                    logger.warning(f"Terminating stuck process: {process.name}")
+                    if process is not None and  process.is_alive():  # 确保进程已启动
+                        process.terminate()
+                        process.join(timeout=1.0)
+                        if process.is_alive():  # 确保进程已终止
+                            logger.error(f"Failed to terminate process: {process.name}")
+                for process in self.audio_processes:
+                    logger.warning(f"Terminating stuck process: {process.name}")
+                    if process is not None and  process.is_alive():  # 确保进程已启动
+                        process.terminate()
+                        process.join(timeout=1.0)
+                        if process.is_alive():  # 确保进程已终止
+                            logger.error(f"Failed to terminate process: {process.name}")
+            except Exception as e:
+                logger.info("Interrupted by user, stopping processes...")
+                self.is_running = False
+                
+                # 等待进程结束
+                capture_audio_process.join()
+                send_audio_process.join()
+                for process in self.video_processes:
+                    process.join()
+            
+            # 更新状态
+            self.mic_status.config(text="🎤 麦克风: 已停止", fg="gray")
+            self.filter_status.config(text="🔍 过滤: 已停止", fg="gray")
+            if CV2_AVAILABLE:
+                self.video_status.config(text="📹 视频: 已停止", fg="gray")
+            
+            logger.info("Audio processing shutdown complete")
 
     def find_vb_cable_device(self):
         """
@@ -612,62 +714,30 @@ class VoiceFilterApp:
         self.root.destroy()
         logger.info("Application closed")
 
-    # def check_auth(self):
-    #     """检查认证状态"""
-    #     try:
-    #         # config = read_auth_config()
-    #         config = {"mac":"mac","key":"key"}
-
-    #         mac = config.get("mac", "")
-            
-    #         # 如果没有MAC地址，显示系统错误
-    #         if not mac:
-    #             messagebox.showerror("系统错误", "无法获取设备标识，程序无法使用")
-    #             return False
-                
-    #         key = config.get("key", "")
-    #         # 如果没有KEY，显示认证对话框
-    #         if not key:
-    #             # 显示认证对话框
-    #             try:
-    #                 auth_dialog = AuthDialog(self.root, mac)
-    #                 self.root.wait_window(auth_dialog.top)
-    #                 return auth_dialog.result or False
-    #             except Exception as e:
-    #                 # 如果认证对话框出现异常，显示错误
-    #                 messagebox.showerror("系统错误", f"认证对话框出错: {str(e)}")
-    #                 return False
-    #         else:
-    #             # 有KEY，尝试自动认证
-    #             try:
-    #                 auth_url = f"{BASE_URL}/xjt_auth"  # 实际使用时替换为正确的URL
-    #                 response = requests.post(auth_url, json={"key": key, "mac": mac})
-                    
-    #                 if response.status_code == 200:
-    #                     result = response.json()
-    #                     if result.get("code") == 200:
-    #                         return True
-    #                     else:
-    #                         # 认证失败，显示认证对话框
-    #                         messagebox.showerror("认证过期", "之前的认证已失效，请重新认证")
-    #                         auth_dialog = AuthDialog(self.root, mac)
-    #                         self.root.wait_window(auth_dialog.top)
-    #                         return auth_dialog.result or False
-    #                 else:
-    #                     messagebox.showerror("网络错误", f"认证检查失败: {response.status_code}，请重新认证")
-    #                     auth_dialog = AuthDialog(self.root, mac)
-    #                     self.root.wait_window(auth_dialog.top)
-    #                     return auth_dialog.result or False
-    #             except Exception as e:
-    #                 messagebox.showerror("网络错误", f"无法连接到认证服务器: {str(e)}，请检查网络后重试")
-    #                 auth_dialog = AuthDialog(self.root, mac)
-    #                 self.root.wait_window(auth_dialog.top)
-    #                 return auth_dialog.result or False
-               
-    #     except Exception as e:
-    #         logger.error(f"Auth check failed: {e}")
-    #         messagebox.showerror("系统错误", f"认证检查失败: {str(e)}")
-    #         return False
+    def on_camera_selected(self, event=None):
+        """当选择摄像头时更新分辨率和FPS选项"""
+        camera_name = self.camera_combo.get()
+        if camera_name in self.camera_idx_map:
+            camera_index = self.camera_idx_map[camera_name]
+            self.update_resolution_options(camera_index)
+    
+    def update_resolution_options(self, camera_index):
+        """更新指定摄像头的分辨率和FPS选项"""
+        formats ,fps = self.get_camera_formats(camera_index)
+        # 提取唯一分辨率和FPS选项
+        resolutions = [item  for item in list(formats) ] if formats else ["默认"] 
+        fps_values = [fps]  if formats else ["默认"]
+        # 更新下拉框选项
+        self.resolution_combo['values'] = resolutions
+        self.fps_combo['values'] = fps_values
+        # 设置默认选项
+        if resolutions:
+            self.resolution_combo.current(0)
+        if fps_values:
+            self.fps_combo.current(0)
+        
+        # 存储格式信息以便后续使用
+        self.camera_formats = formats
 
 if __name__ == "__main__":
     # Add freeze support check to prevent multiple windows on startup
@@ -675,6 +745,17 @@ if __name__ == "__main__":
     freeze_support()
     
     root = tk.Tk()
+    fonts = tkFont.families()
+    for itm in fonts:
+        if "阿里巴巴普惠" in itm:
+            font_name = itm
+            break
+        elif "Microsoft YaHei" in itm:
+            font_name = itm
+            break
+
+    if font_name is None:
+        font_name = font_name
     app = VoiceFilterApp(root)
     # Only set the protocol if the root window still exists (not destroyed during auth)
     try:
