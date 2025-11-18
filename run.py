@@ -20,9 +20,11 @@ from filterprocess import (
     process_send_video_frames,
     init_audio_mic,
     init_audio_output,
-    init_video_cam
+    init_video_cam,
+    init_model,
+    upload_user_detect_record
 )
-from util import AuthState, BASE_URL, load_sensitive_words
+from util import AuthState, BASE_URL, load_sensitive_words, AudioReplaceType
 
 # 导入认证相关模块
 # from utils.auth import read_auth_config, send_auth_request
@@ -171,7 +173,7 @@ class AuthDialog:
 class VoiceFilterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("直播敏感词过滤器")
+        self.root.title("消禁腾")
 
         # Calculate new dimensions: increase height by 20%
         original_height = 550
@@ -213,6 +215,9 @@ class VoiceFilterApp:
 
         self.p = pyaudio.PyAudio()
      
+        # Add mute option variable
+        self.mute_option = tk.StringVar(value="silence")  # Default to silence
+        
         check_res = check_auth()
         # Check authentication before creating widgets
         if check_res==AuthState.SUCCESS.value:
@@ -345,7 +350,7 @@ class VoiceFilterApp:
         # Clear any existing widgets (in case of reload)
         for widget in self.root.winfo_children():
             widget.destroy()
-        text = "\u2009".join("直播敏感词过滤器")    
+        text = "\u2009".join("消禁腾")    
         # Title
         title = tk.Label(self.root, text=text, font=(font_name, 14 ))
         title.pack(pady=(10, 5))
@@ -410,14 +415,34 @@ class VoiceFilterApp:
                 self.update_resolution_options(0)
             
             # 视频输出选项（新增）
-            self.video_output_var = tk.BooleanVar()
-            video_output_check = tk.Checkbutton(self.root, text="启用视频输出（2秒延迟）", variable=self.video_output_var)
-            video_output_check.pack(pady=5)
+            # self.video_output_var = tk.BooleanVar()
+            # video_output_check = tk.Checkbutton(self.root, text="启用视频输出（2秒延迟）", variable=self.video_output_var)
+            # video_output_check.pack(pady=5)
 
-    
+        # 添加消音选项区域
+        tk.Label(self.root, text="消音选项:", anchor='w').pack(fill='x', padx=20, pady=(10, 0))
+       
+        # 修改为下拉框选择方式，使用更友好的显示文字
+        mute_options_display = ["使用静音代替", "使用'哔'代替"]
+        mute_options_values = [AudioReplaceType.SILENCE.value, AudioReplaceType.BEEP.value]
+        # self.mute_option_combo = ttk.Combobox(mute_frame, values=mute_options_display, state="readonly")
+        self.mute_option_combo = ttk.Combobox(self.root, values=mute_options_display, state="readonly")
+
+        self.mute_option_combo.set("使用静音代替")  # 默认值
+        self.mute_option_combo.pack(fill='x', padx=20, pady=5)
+        
+        # 创建映射字典，用于获取实际值
+        self.mute_option_map = dict(zip(mute_options_display, mute_options_values))
+        
+        # 添加导入敏感词按钮
+        import_btn_frame = tk.Frame(self.root)
+        import_btn_frame.pack(pady=5)
+        self.import_words_btn = tk.Button(import_btn_frame, text="📥 导入敏感词", command=self.import_sensitive_words, width=15)
+        self.import_words_btn.pack()
+
         # 启动按钮 - decrease height by 1/3 (from 3 to 2)
         btn_frame = tk.Frame(self.root)
-        btn_frame.pack(pady=20)
+        btn_frame.pack(pady=10)
         self.start_btn = tk.Button(btn_frame, text="▶ 启动过滤", command=self.toggle_process, width=15, height=2)  # Reduced height from 3 to 2
         self.start_btn.pack()
 
@@ -440,7 +465,7 @@ class VoiceFilterApp:
             self.video_status.pack(side=tk.LEFT, padx=5)
 
         # 底部提示
-        hint = tk.Label(self.root, text="使用前请安装 VB-Cable\n直播伴侣中选择 'CABLE Input' 作为麦克风", fg="gray")
+        hint = tk.Label(self.root, text="使用前请安装 VB-Cable\n直播软件中选择 'CABLE Input' 作为麦克风", fg="gray")
         hint.pack(side='bottom', pady=(0,10))
     def toggle_process(self):
         if not self.is_running:
@@ -465,7 +490,7 @@ class VoiceFilterApp:
             logger.info(f"Selected output device index: {self.output_idx}")
             
             # If video is available and enabled, log camera device index
-            if CV2_AVAILABLE and self.video_output_var.get() and self.camera_names:
+            if CV2_AVAILABLE  and self.camera_names:
                 camera_name = self.camera_combo.get()
                 if camera_name:
                     self.camera_idx = self.camera_idx_map[camera_name]
@@ -520,6 +545,7 @@ class VoiceFilterApp:
         audio_input = init_audio_mic(audio_input_device_index)
         audio_output = init_audio_output()
         cam = init_video_cam(camera_idx,w,h,fps)
+        model = init_model()
         msg = None
         ret = True
         if audio_input is None:
@@ -544,9 +570,18 @@ class VoiceFilterApp:
             logger.info("视频输入设备检测成功")
             if cam.isOpened():  # Check if the video capture is open
                 cam.release()
-        return ret, msg
+        if model is None:
+            msg = '模型加载失败'
+            ret = False
+            logger.error("模型加载失败")
+        else:
+            logger.info("模型加载成功")
+        return ret, msg, model
 
     def run_filter(self):
+        
+        
+        
         logger.info(f"self.input_idx_map : {self.input_idx_map}")
         audio_input_device_index = self.input_idx_map[self.input_combo.get()]
         logger.info(f"audio_input_device_index：{self.input_idx_map[self.input_combo.get()]}")
@@ -562,7 +597,7 @@ class VoiceFilterApp:
         logger.info(f"selected_fps: {selected_fps}")
         
         # check device available
-        ret, msg = self.check_device_available(audio_input_device_index, self.camera_idx_map[self.camera_combo.get()], width, height ,int(selected_fps))
+        ret, msg, model = self.check_device_available(audio_input_device_index, self.camera_idx_map[self.camera_combo.get()], width, height ,int(selected_fps))
         if not ret:
             messagebox.showerror("错误", msg)
             # Update UI status
@@ -598,6 +633,7 @@ class VoiceFilterApp:
             self.audio_queue = Queue()
             video_queue = Queue()  # Changed to PriorityQueue for better ordering
             audio_queue = Queue()
+            record_queue = Queue()
             # Reset the is_running flag in claude_plan before starting threads
             stop_event.clear()
             start_time = time.time() + 10.0
@@ -606,16 +642,26 @@ class VoiceFilterApp:
             logger.info(f"load sensitive words success,words size : {len(sensitive_set)}")
             # 创建音频处理进程，使用从claude_plan导入的函数
             self.audio_processes = []
-            capture_audio_process = Process(target=process_capture_audio, name="AudioCapture" ,args=(audio_queue, start_time, stop_event, audio_input_device_index,sensitive_set))
+            # 获取选中的消音选项
+            selected_mute_display = self.mute_option_combo.get()
+            selected_mute_option = self.mute_option_map.get(selected_mute_display, "silence")
+            logger.info(f"Selected mute option: {selected_mute_option}")
+            
+            # 在创建进程时传递消音选项参数
+            capture_audio_process = Process(target=process_capture_audio, name="AudioCapture",
+                                           args=(audio_queue,record_queue, start_time, stop_event, audio_input_device_index, 
+                                                 sensitive_set, model,  self.mute_option_map[self.mute_option_combo.get()]))
             send_audio_process = Process(target=process_send_audio_frames, name="AudioProcessor",args=(audio_queue, start_time, stop_event) )
-            self.audio_processes.extend([capture_audio_process, send_audio_process])
+            upload_record_process = Process(target=upload_user_detect_record, name="UploadProcessor",args=(record_queue, get_device_id(), stop_event) )
+
+            self.audio_processes.extend([capture_audio_process, send_audio_process,upload_record_process])
             # 启动视频进程（如果启用）
             for process in self.audio_processes:
                 logger.info(f"Starting audio process: {process.name}")
                 process.start()
             # 如果启用了视频功能，则创建视频处理进程
             self.video_processes = []
-            if CV2_AVAILABLE and self.video_output_var.get():
+            if CV2_AVAILABLE :
                 capture_video_process = Process(target=process_capture_video_frames, name="VideoCapture",args=(video_queue, start_time, stop_event,self.camera_idx_map[self.camera_combo.get()], width, height,int(selected_fps)))
                 send_video_process = Process(target=process_send_video_frames, name="VideoSender",args=(video_queue, start_time, stop_event, width, height,int(selected_fps)))
                 self.video_processes.extend([capture_video_process, send_video_process])
@@ -656,6 +702,7 @@ class VoiceFilterApp:
                 # 等待进程结束
                 capture_audio_process.join()
                 send_audio_process.join()
+                upload_record_process.join()
                 for process in self.video_processes:
                     process.join()
             
@@ -667,25 +714,7 @@ class VoiceFilterApp:
             
             logger.info("Audio processing shutdown complete")
 
-    def find_vb_cable_device(self):
-        """
-        查找系统中的 VB-Cable 设备
-        返回设备索引，如果未找到则返回 None
-        """
-        try:
-            devices = []
-            for i in range(self.p.get_device_count()):
-                dev = self.p.get_device_info_by_index(i)
-                # 查找输出设备且名称包含 CABLE
-                if dev['maxOutputChannels'] > 0 and 'CABLE' in dev['name'].upper():
-                    logger.info(f"Found VB-Cable device {i}: {dev['name']}")
-                    return i
-            logger.info("No VB-Cable device found")
-            return None
-        except Exception as e:
-            logger.error(f"Error finding VB-Cable device: {e}")
-            return None
-
+ 
     def on_closing(self):
         # 占位函数：关闭应用时的清理操作
         if self.is_running:
@@ -738,6 +767,61 @@ class VoiceFilterApp:
         
         # 存储格式信息以便后续使用
         self.camera_formats = formats
+
+    def import_sensitive_words(self):
+        """导入敏感词文件"""
+        try:
+            from tkinter import filedialog
+            file_path = filedialog.askopenfilename(
+                title="选择敏感词文件",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+            )
+            
+            if not file_path:
+                return
+                
+            # 读取文件内容
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                
+            # 处理敏感词，去除空白行和注释行
+            sensitive_words = []
+            for line in lines:
+                word = line.strip()
+                if word and not word.startswith('#'):  # 忽略空行和注释行
+                    sensitive_words.append(word)
+                    
+            if not sensitive_words:
+                messagebox.showwarning("导入失败", "文件中没有有效的敏感词")
+                return
+                
+            # 发送敏感词到服务器
+            try:
+                update_url = f"{BASE_URL}/update_user_words"
+                payload = {
+                    "mac": get_device_id(),  # 修复:使用get_device_id()而不是device_id变量
+                    "words": sensitive_words
+                }
+                response = requests.post(update_url, json=payload)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get("code") == 200:
+                        messagebox.showinfo("导入成功", f"成功导入 {len(sensitive_words)} 个敏感词并同步到服务器")
+                        logger.info(f"Imported {len(sensitive_words)} sensitive words from {file_path} and synced to server")
+                    else:
+                        messagebox.showwarning("导入部分成功", f"本地导入成功 ({len(sensitive_words)} 个敏感词)，但服务器同步失败: {result.get('msg')}")
+                        logger.warning(f"Imported {len(sensitive_words)} sensitive words locally but failed to sync to server: {result.get('msg')}")
+                else:
+                    messagebox.showwarning("导入部分成功", f"本地导入成功 ({len(sensitive_words)} 个敏感词)，但服务器同步失败: HTTP {response.status_code}")
+                    logger.warning(f"Imported {len(sensitive_words)} sensitive words locally but failed to sync to server: HTTP {response.status_code}")
+            except Exception as e:
+                messagebox.showwarning("导入部分成功", f"本地导入成功 ({len(sensitive_words)} 个敏感词)，但服务器同步失败: {str(e)}")
+                logger.warning(f"Imported {len(sensitive_words)} sensitive words locally but failed to sync to server: {str(e)}")
+                
+        except Exception as e:
+            messagebox.showerror("导入失败", f"导入敏感词时出错:\n{str(e)}")
+            logger.error(f"Failed to import sensitive words: {str(e)}")
 
 if __name__ == "__main__":
     # Add freeze support check to prevent multiple windows on startup

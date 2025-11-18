@@ -14,8 +14,12 @@ class AuthState(Enum):
     UNBIND = 3
     FOBBIDDEN = 4   
 
-# BASE_URL = "http://127.0.0.1:5000"
-BASE_URL = "https://cfapi.hzycai.com"
+class AudioReplaceType(Enum):
+    SILENCE = 0
+    BEEP = 1
+
+BASE_URL = "http://127.0.0.1:5000"
+# BASE_URL = "https://cfapi.hzycai.com"
 sen_words_version_file_path="config/version.json"
 key = b'Ephk5rl57rcgpWohYOzpSU7RM4-7vb0Xdm6m47eU_GU='
 def resource_path(relative_path):

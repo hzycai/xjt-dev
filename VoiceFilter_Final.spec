@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('model', 'model'), ('config', 'config'), ('funasr', 'funasr')]
+datas = [('model', 'model'), ('config', 'config'), ('res', 'res'), ('funasr', 'funasr')]
 binaries = []
 hiddenimports = ['sklearn.utils._cython_blas', 'sklearn.neighbors.typedefs', 'sklearn.tree._utils']
 tmp_ret = collect_all('faster_whisper')

@@ -8,6 +8,9 @@ import pyvirtualcam
 import numpy as np
 from utils.logger import get_logger
 from util import resource_path 
+from util import AudioReplaceType
+import requests
+from utils.auth import BASE_URL
 logger = get_logger()
  
 
@@ -29,7 +32,7 @@ def init_model():
     # Initialize the speech recognition model like in main.py
     logger.info("Initializing speech recognition model")
     model_dir =resource_path("model") 
-    
+    model = None
     logger.info(f"Model directory: {model_dir}")
     # model = AutoModel(model="paraformer-zh-streaming", model_revision="v2.0.4", disable_update=True,device="cuda:0")
     # model = AutoModel(model="./model", model_revision="v2.0.4", disable_update=True,device="cuda:0")
@@ -275,13 +278,15 @@ def process_send_audio_frames(audio_queue, start_time, stop_event):
         logger.info("Stopping audio send thread")
     
 
-def process_capture_audio(audio_queue, start_time, stop_event, audio_input_device_index , sensitive_set):
+def process_capture_audio(audio_queue, record_queue,start_time, stop_event, audio_input_device_index , sensitive_set, model, audio_fob_type):
     # Initialize audio input stream
     logger.info("Starting audio capture thread")
+   
     INPUT_RATE = 16000
     CHUNK = 960
     audio_stream_in = init_audio_mic(audio_input_device_index)
-    model = init_model()
+    if model is None:
+        model = init_model()
     audio_stream_out = init_audio_output()
     # Buffer to accumulate audio data
     audio_buffer = np.array([], dtype=np.float32)
@@ -322,6 +327,7 @@ def process_capture_audio(audio_queue, start_time, stop_event, audio_input_devic
                 print(f"音频推理完毕，推理时长{now_sec() - now_t}")
                 # Check for sensitive words
                 found_sensitive_words = []
+                recognized_text = None
                 if isinstance(res, list) and len(res) > 0 and 'text' in res[0]:
                     recognized_text = res[0]['text'].replace(' ', '')
                     for word in sensitive_set:
@@ -332,23 +338,30 @@ def process_capture_audio(audio_queue, start_time, stop_event, audio_input_devic
                             break
                              
                 if found_sensitive_words:
-                    # Create beep sound with same duration as original audio                                      
-                    output_rate = audio_stream_out._rate  # Get output stream rate                    
-                    # Generate beep signal
-                    num_samples = int(duration * output_rate)
-                    beep_freq = 800  # Beep frequency in Hz
-                    t = np.linspace(0, duration, num_samples, False)
-                    # beep_signal = np.sin(2 * np.pi * beep_freq * t) * 0.5  # Generate sine wave with reduced volume
-                    audio_frame.data = np.sin(2 * np.pi * beep_freq * t) * 0.5  # Generate sine wave with reduced volume
-
-                    # audio_frame.data = beep_signal.astype(np.float32).tobytes()
-                    logger.info(f"Replaced audio with beep due to sensitive words: {', '.join(found_sensitive_words)}")
-                    # Log timestamp when beep data is sent
-                    logger.debug(f"Sent beep audio frame with timestamp: {audio_frame.target_t}")
+                    output_rate = audio_stream_out._rate
+                    for item in found_sensitive_words:
+                        record_queue.put({"word":item,"sentence":recognized_text})
                      
-                    audio_queue.put((timestamp + delay_t, audio_frame,output_rate,output_rate))
+                    if audio_fob_type == AudioReplaceType.SILENCE.value:
+                        # Use silence instead of beep
+                        num_samples = int(duration * output_rate)
+                        silence_signal = np.zeros(num_samples, dtype=np.float32)
+                        audio_frame.data = silence_signal
+                        logger.info(f"Replaced audio with silence due to sensitive words: {', '.join(found_sensitive_words)}")
+                        logger.debug(f"Sent silence audio frame with timestamp: {audio_frame.target_t}")
+                        audio_queue.put((timestamp + delay_t, audio_frame, INPUT_RATE, audio_stream_out._rate))
+                    else:  
+                        # Generate beep signal
+                        num_samples = int(duration * output_rate)
+                        beep_freq = 800  # Beep frequency in Hz
+                        t = np.linspace(0, duration, num_samples, False)
+                        audio_frame.data = np.sin(2 * np.pi * beep_freq * t) * 0.5  # Generate sine wave with reduced volume
+                       
+                        logger.info(f"Replaced audio with beep due to sensitive words: {', '.join(found_sensitive_words)}")
+                        logger.debug(f"Sent beep audio frame with timestamp: {audio_frame.target_t}")
+                        audio_queue.put((timestamp + delay_t, audio_frame, output_rate, output_rate))
                 else:
-                    audio_queue.put((timestamp + delay_t, audio_frame,INPUT_RATE,audio_stream_out._rate))
+                    audio_queue.put((timestamp + delay_t, audio_frame, INPUT_RATE, audio_stream_out._rate))
                 now_t = now_sec()
                 print(f"音频处理完毕，发送时间:{now_t}")
                 timestamp = None
@@ -362,5 +375,61 @@ def process_capture_audio(audio_queue, start_time, stop_event, audio_input_devic
         logger.info("Stopping audio capture thread")
         audio_stream_in.stop_stream()
         audio_stream_in.close()
+
+def upload_user_detect_record(record_queue, mac, stop_event):
+    """
+    Upload user detection records from queue to server API
+    
+    Args:
+        record_queue: Queue containing dict items with word and sentence keys
+        mac: MAC address of the device
+    """
+    logger.info("Starting user detect record upload thread")
+    try:
+        while not stop_event.is_set():
+            try:
+                # Get record from queue with timeout to allow periodic checking
+                record = record_queue.get(timeout=1.0)
+                
+                # Extract data from record
+                word = record.get('word', '')
+                sentence = record.get('sentence', '')
+                
+                # Skip if essential data is missing
+                if not word or not sentence:
+                    logger.warning("Skipping record due to missing word or sentence")
+                    continue
+                
+                # Prepare data for API call
+                data = {
+                    "mac": mac,
+                    "word": word,
+                    "sentence": sentence
+                }
+                
+                # Make API call
+                url = f"{BASE_URL}/add_user_detect_record"
+                response = requests.post(url, json=data)
+                
+                # Check response
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get("code") == 200:
+                        logger.info(f"Successfully uploaded record: {word}")
+                    else:
+                        logger.error(f"Failed to upload record: {result.get('msg')}")
+                else:
+                    logger.error(f"HTTP error {response.status_code} when uploading record")
+                    
+            except queue.Empty:
+                # Timeout occurred, continue loop to allow checking for program termination
+                continue
+            except Exception as e:
+                logger.error(f"Error uploading user detect record: {e}")
+                logger.exception(e)
+    except KeyboardInterrupt:
+        logger.info("User detect record upload thread interrupted")
+    finally:
+        logger.info("Stopping user detect record upload thread")
 
  

@@ -8,6 +8,7 @@ pyinstaller ^
   --windowed ^
   --name="VoiceFilter_Final" ^
   --add-data "model;model" ^
+  --add-data "res;res" ^
   --add-data "config;config" ^
   --add-data "funasr;funasr" ^
   --hidden-import=sklearn.utils._cython_blas ^
