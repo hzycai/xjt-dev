@@ -76,5 +76,5 @@ ASR 引擎：FunASR（Paraformer 流式模型）
 推荐使用 GPU（CUDA）以获得更低的识别延迟，确保 device="cuda:0" 可用。
 首次运行建议先测试音频/视频是否正常流入 VB-CABLE 和 OBS。
 本项目仅做技术演示，请遵守当地法律法规，勿用于非法用途。
-📄 许可证
-本项目采用 MIT 许可证。详情见 LICENSE。
+
+ 
