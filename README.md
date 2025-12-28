@@ -1,71 +1,80 @@
-# 抖音敏感词过滤器 (Whisper版)
 
-这是一个实时语音过滤工具，专门用于在直播或语音通话中自动检测并屏蔽敏感词汇。它使用 OpenAI 的 Whisper 语音识别技术来识别语音内容，并实时过滤预设的敏感词。
+# LiveStream Sensitive Word Filter
 
-## 功能特点
+本项目实现在直播过程中对音频进行**实时敏感词过滤**。通过采集麦克风和摄像头数据，在固定延迟后同步推流，并自动屏蔽包含敏感词的语音内容。
 
-- 实时语音监听和转发
-- 基于 Whisper 的高精度语音转文本
-- 敏感词自动检测和屏蔽
-- 支持 GPU 加速（如果可用）
-- 图形用户界面，操作简单
+---
 
-## 系统要求
+## 📌 功能特点
 
-- Python 3.7 或更高版本
-- 麦克风设备
-- VB-Cable 或类似虚拟音频设备（用于转发过滤后的音频）
+- 实时采集麦克风音频与摄像头视频
+- 使用 **FunASR** 进行流式语音识别（ASR）
+- 自动检测并过滤配置文件中的敏感词
+- 音频输出至 **VB-CABLE 虚拟麦克风**
+- 视频推流至 **OBS Studio**，便于直播使用
+- 支持自定义 ASR 模型路径或使用默认模型
 
-## 安装依赖
+---
 
-```bash
-pip install -r requirements.txt
-```
+## ⚙️ 环境依赖
 
-主要依赖包括：
-- faster-whisper: 用于语音识别
-- tkinter: 图形界面
-- pyaudio: 音频处理
-- numpy: 数值计算
+在运行本项目前，请确保已安装以下软件：
 
-如果需要 GPU 加速，还需要安装相应的包：
-```bash
-# 对于 NVIDIA GPU 用户
-pip install onnxruntime-gpu
+- [VB-CABLE Virtual Audio Device](https://vb-audio.com/Cable/)（用于创建虚拟麦克风）
+- [OBS Studio](https://obsproject.com/)（用于接收视频推流）
 
-# 对于仅 CPU 用户
-pip install onnxruntime
-```
+> 💡 请提前配置好 OBS，使其能捕获本程序输出的视频流。
 
-## 使用方法
+---
 
-1. 确保已安装所有依赖
-2. 运行程序：
+## 📦 安装步骤
+
+1. 克隆本仓库：
    ```bash
-   python main.py
-   ```
-3. 在图形界面中：
-   - 选择输入设备（通常是你的麦克风）
-   - 选择输出设备（通常是 VB-Cable 虚拟音频设备）
-   - 选择合适的 Whisper 模型（base 或 small）
-   - 点击"启动过滤"开始实时语音过滤
-4. 程序会将过滤后的音频输出到指定的输出设备
+   git clone https://github.com/hzycai/xjt-dev.git
+   cd xjt-dev
+安装 Python 依赖：
+pip install -r requirements.txt
+选择 ASR 模型加载方式（二选一）：
+方式一：使用项目内 model/ 目录下的模型
+将 FunASR 的 paraformer-zh-streaming 模型（或其他兼容模型）放入 ./model/ 目录
+代码中会自动从该路径加载（见 filterprocess.py 中 init_model 函数）
+方式二：使用 FunASR 默认模型路径
+首次运行前下载模型到默认缓存目录：
+ 
+python download_model.py
+此脚本会自动下载 paraformer-zh-streaming 模型（版本 v2.0.4）
+🔧 如需更换其他 ASR 模型（如 SenseVoice、Whisper 等），请修改 filterprocess.py 中 AutoModel 的 model 参数。
 
-## 工作原理
+🛡️ 敏感词配置
+敏感词列表位于：
+ 
+config/sensitive_words.txt
+格式：每行一个敏感词，支持中文、英文等。
 
-1. 程序从选定的输入设备捕获音频
-2. 使用 Whisper 模型将音频转换为文本
-3. 检查文本中是否包含敏感词
-4. 如果检测到敏感词，会在该时间段内静音音频输出
-5. 将处理后的音频转发到指定的输出设备
+示例：
 
-## 敏感词配置
+最便宜
+最实惠
+超值
 
-当前版本使用内置的敏感词列表。你可以直接在 [main.py](file:///Users/gushan/Documents/code/yucheng/yucheng-whisper/main.py) 中修改 [load_sensitive_words](file:///Users/gushan/Documents/code/yucheng/yucheng-whisper/main.py#L27-L29) 方法来添加或删除敏感词。
+▶️ 运行程序
+ 
+python run.py
+程序将：
 
-## 注意事项
-
-- 确保 VB-Cable 或类似虚拟音频设备已正确安装和配置
-- 根据你的硬件选择合适的 Whisper 模型（GPU 用户可选择 small 模型获得更好效果）
-- 程序会自动检测 NVIDIA GPU 并提供相应选项
-
+启动摄像头和麦克风采集
+实时识别语音并过滤敏感词
+将处理后的音频送入 VB-CABLE
+将视频帧推送至 OBS（通过共享内存、虚拟摄像头等方式，具体取决于你的实现）
+📚 技术栈
+ASR 引擎：FunASR（Paraformer 流式模型）
+音频路由：VB-CABLE
+视频推流：OBS Studio
+语言：Python 3.8+
+📝 注意事项
+推荐使用 GPU（CUDA）以获得更低的识别延迟，确保 device="cuda:0" 可用。
+首次运行建议先测试音频/视频是否正常流入 VB-CABLE 和 OBS。
+本项目仅做技术演示，请遵守当地法律法规，勿用于非法用途。
+📄 许可证
+本项目采用 MIT 许可证。详情见 LICENSE。

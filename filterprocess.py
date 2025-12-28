@@ -6,14 +6,11 @@ import pyaudio
 import cv2
 import pyvirtualcam
 import numpy as np
-from utils.logger import get_logger
+from util import get_logger
 from util import resource_path 
 from util import AudioReplaceType
-import requests
-from utils.auth import BASE_URL
 logger = get_logger()
  
-
 @dataclass
 class MediaFrame:
     data: any
@@ -34,13 +31,11 @@ def init_model():
     model_dir =resource_path("model") 
     model = None
     logger.info(f"Model directory: {model_dir}")
-    # model = AutoModel(model="paraformer-zh-streaming", model_revision="v2.0.4", disable_update=True,device="cuda:0")
-    # model = AutoModel(model="./model", model_revision="v2.0.4", disable_update=True,device="cuda:0")
     try:
+        # model = AutoModel(model="paraformer-zh-streaming", model_revision="v2.0.4", disable_update=True,device="cuda:0")
         model = AutoModel(model=model_dir, model_revision="v2.0.4", disable_update=True,device="cuda:0",disable_pbar=False)
     except Exception as e:
         logger.error(f"Failed to initialize speech recognition model: {e}")
-
    
     logger.info("Speech recognition model initialized successfully")
     return model
@@ -48,8 +43,6 @@ def init_model():
 def init_video_cam(camera_index,w,h,fps):
     try:    
         logger.info("Initializing video capture device")
-     
-
         cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
         # 设置摄像头分辨率
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
@@ -68,7 +61,6 @@ def init_video_cam(camera_index,w,h,fps):
 def init_audio_mic(audio_input_device_index,p):
     # Initialize audio input stream similar to main.py
     logger.info("Initializing audio input stream")
-    # p = pyaudio.PyAudio()
     INPUT_RATE = 16000
     CHUNK = 960
     CHANNELS = 1
@@ -112,12 +104,10 @@ def init_audio_output(p):
                     output_idx = i
                     logger.info(f"Using alternative output device: {dev['name']} (index {i})")
                     break
-        
         if output_idx is None:
             raise Exception("No output device found")
         device_info = p.get_device_info_by_index(output_idx)
         output_rate = int(device_info['defaultSampleRate'])
-
         audio_stream_out = p.open(
                 format=pyaudio.paFloat32,
                 channels=1,
@@ -134,7 +124,6 @@ def init_audio_output(p):
         
 def process_capture_video_frames(video_queue, start_time, stop_event, camera_index,width,height, fps):
     # Thread 1: Process video frames
-    # TODO: Add video processing logic here
     logger.info("Starting video capture thread")
     logger.info(f"Camera index: {camera_index}")
     cap = init_video_cam(camera_index,width,height, fps)  # Get the video capture object
@@ -147,12 +136,9 @@ def process_capture_video_frames(video_queue, start_time, stop_event, camera_ind
             if not ret:
                 logger.warning("Can't receive frame from camera")
                 break
-             
             # Create MediaFrame with frame data and timestamp based on unified clock
-            
             timestamp =  now_sec() + delay_t
             video_queue.put((timestamp,frame))   # Priority based on timestamp
-            
     except Exception as e:
         logger.error(f"Error capturing video frames: {e}")
     finally:
@@ -162,23 +148,19 @@ def process_capture_video_frames(video_queue, start_time, stop_event, camera_ind
 
 def process_send_video_frames(video_queue, start_time, stop_event,width,height, fps):
     # Thread 1: Process video frames
-    # TODO: Add video processing logic here
     logger.info("Starting video sending thread")
     target_t = None
     frame_count = 0
     while time.time() < start_time :
         time.sleep(0.01)
- 
     try:
         with pyvirtualcam.Camera(width=width, height=height, fps=fps) as cam:
             logger.info("Virtual camera initialized successfully")
-            # while is_running:
             while not stop_event.is_set():
                 try:
                     # Get next frame from queue
                     if target_t is None:
                         target_t, media_frame = video_queue.get(timeout=0.01)
-                        # print(f"取出frame，queue size:{video_queue.qsize()}")
                     current_time = now_sec()
                     # Send frame if it's time to display it
                     if current_time - delay_threshold <=  target_t <= current_time:
@@ -189,7 +171,6 @@ def process_send_video_frames(video_queue, start_time, stop_event,width,height, 
                         # 将RGB格式的numpy数组发送到虚拟摄像头
                         cam.send(frame_rgb)
                         # Log the target_t when sending video frame
-                        # logger.debug(f"Sent video frame with timestamp: {target_t}")
                         frame_count += 1
                         target_t = None  # Ready for next frame
                         if frame_count % 30 == 0:  # Log every 30 frames sent
@@ -225,26 +206,20 @@ def output_audio_to_vb_cable(audio_data, vb_cable_stream, input_rate, output_rat
             if input_rate != output_rate:
                 # 将bytes转换为numpy array
                 audio_array = np.frombuffer(audio_data, dtype=np.float32)
-                
                 # 计算重采样后的长度
                 new_length = int(len(audio_array) * output_rate / input_rate)
-                
                 # 重采样 - 简单的线性插值方法
                 resampled_audio = np.interp(
                     np.linspace(0, len(audio_array), new_length, endpoint=False),
                     np.arange(len(audio_array)),
                     audio_array
                 )
-                
                 # 转换回bytes
                 audio_data = resampled_audio.astype(np.float32).tobytes()
-            
             # 输出音频数据
             vb_cable_stream.write(audio_data)
-            
         except Exception as e:
             logger.error(f"输出音频到输出设备失败: {e}")
-            print(f"输出音频到输出设备失败: {e}")
 def process_send_audio_frames(audio_queue, start_time, stop_event):
     # Thread 2: Process audio frames
     logger.info("Starting audio processing and sending thread")
@@ -254,7 +229,7 @@ def process_send_audio_frames(audio_queue, start_time, stop_event):
     audio_frame = None
     while time.time() < start_time :
         time.sleep(0.01)
-    # while is_running:
+ 
     try:
         while not stop_event.is_set():
             try:
@@ -321,13 +296,13 @@ def process_capture_audio(audio_queue, record_queue,start_time, stop_event, audi
             if len(audio_buffer) >= int(target_duration * INPUT_RATE):
                 # Create MediaFrame with accumulated audio data and timestamp
                 now_t = now_sec()
-                print(f"音频采集结束，结束时间：{now_t}，采集时间长度：{(now_t - timestamp):.3f}")
+                logger.info(f"音频采集结束，结束时间：{now_t}，采集时间长度：{(now_t - timestamp):.3f}")
 
                 duration = len(audio_buffer) / INPUT_RATE
                 audio_frame = MediaFrame(audio_buffer.copy(), timestamp + delay_t, duration)
                 res = model.generate(input=audio_buffer, is_final=is_running)
                 logger.debug(f"Recognized speech: {res}")
-                print(f"音频推理完毕，推理时长{now_sec() - now_t}")
+                logger.info(f"音频推理完毕，推理时长{now_sec() - now_t}")
                 # Check for sensitive words
                 found_sensitive_words = []
                 recognized_text = None
@@ -337,7 +312,7 @@ def process_capture_audio(audio_queue, record_queue,start_time, stop_event, audi
                         if word in recognized_text:
                             found_sensitive_words.append(word)
                             logger.warning(f"Sensitive word detected: {word}")
-                            print(f"⚠️  Warning: Sensitive word detected: {word}")
+                            logger.error(f"⚠️  Warning: Sensitive word detected: {word}")
                             break
                              
                 if found_sensitive_words:
@@ -366,7 +341,7 @@ def process_capture_audio(audio_queue, record_queue,start_time, stop_event, audi
                 else:
                     audio_queue.put((timestamp + delay_t, audio_frame, INPUT_RATE, audio_stream_out._rate))
                 now_t = now_sec()
-                print(f"音频处理完毕，发送时间:{now_t}")
+                logger.info(f"音频处理完毕，发送时间:{now_t}")
                 timestamp = None
                 # Reset buffer
                 audio_buffer = np.array([], dtype=np.float32)
@@ -379,61 +354,5 @@ def process_capture_audio(audio_queue, record_queue,start_time, stop_event, audi
         audio_stream_in.stop_stream()
         audio_stream_in.close()
         p.terminate()
-
-def upload_user_detect_record(record_queue, mac, stop_event):
-    """
-    Upload user detection records from queue to server API
-    
-    Args:
-        record_queue: Queue containing dict items with word and sentence keys
-        mac: MAC address of the device
-    """
-    logger.info("Starting user detect record upload thread")
-    try:
-        while not stop_event.is_set():
-            try:
-                # Get record from queue with timeout to allow periodic checking
-                record = record_queue.get(timeout=1.0)
-                
-                # Extract data from record
-                word = record.get('word', '')
-                sentence = record.get('sentence', '')
-                
-                # Skip if essential data is missing
-                if not word or not sentence:
-                    logger.warning("Skipping record due to missing word or sentence")
-                    continue
-                
-                # Prepare data for API call
-                data = {
-                    "mac": mac,
-                    "word": word,
-                    "sentence": sentence
-                }
-                
-                # Make API call
-                url = f"{BASE_URL}/add_user_detect_record"
-                response = requests.post(url, json=data)
-                
-                # Check response
-                if response.status_code == 200:
-                    result = response.json()
-                    if result.get("code") == 200:
-                        logger.info(f"Successfully uploaded record: {word}")
-                    else:
-                        logger.error(f"Failed to upload record: {result.get('msg')}")
-                else:
-                    logger.error(f"HTTP error {response.status_code} when uploading record")
-                    
-            except queue.Empty:
-                # Timeout occurred, continue loop to allow checking for program termination
-                continue
-            except Exception as e:
-                logger.error(f"Error uploading user detect record: {e}")
-                logger.exception(e)
-    except KeyboardInterrupt:
-        logger.info("User detect record upload thread interrupted")
-    finally:
-        logger.info("Stopping user detect record upload thread")
 
  
