@@ -35,11 +35,16 @@
    cd xjt-dev
 安装 Python 依赖：
 pip install -r requirements.txt
+
 选择 ASR 模型加载方式（二选一）：
+
 方式一：使用项目内 model/ 目录下的模型
+
 将 FunASR 的 paraformer-zh-streaming 模型（或其他兼容模型）放入 ./model/ 目录
 代码中会自动从该路径加载（见 filterprocess.py 中 init_model 函数）
+
 方式二：使用 FunASR 默认模型路径
+
 首次运行前下载模型到默认缓存目录：
  
 python download_model.py
@@ -55,7 +60,9 @@ config/sensitive_words.txt
 示例：
 
 最便宜
+
 最实惠
+
 超值
 
 ▶️ 运行程序
@@ -67,12 +74,19 @@ python run.py
 实时识别语音并过滤敏感词
 将处理后的音频送入 VB-CABLE
 将视频帧推送至 OBS（通过共享内存、虚拟摄像头等方式，具体取决于你的实现）
+
 📚 技术栈
+
 ASR 引擎：FunASR（Paraformer 流式模型）
+
 音频路由：VB-CABLE
+
 视频推流：OBS Studio
+
 语言：Python 3.8+
+
 📝 注意事项
+
 推荐使用 GPU（CUDA）以获得更低的识别延迟，确保 device="cuda:0" 可用。
 首次运行建议先测试音频/视频是否正常流入 VB-CABLE 和 OBS。
 本项目仅做技术演示，请遵守当地法律法规，勿用于非法用途。
