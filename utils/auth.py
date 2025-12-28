@@ -29,14 +29,14 @@ def create_userinfo(key):
     home = Path.home()
     
     # 动态获取系统盘符，而不是硬编码C盘
-    windir = Path(os.environ.get('WINDIR', 'C:\\Windows'))
-    system_root = windir.parent  # 通常是 C:\
-    program_data_path = system_root / "ProgramData" / "cache" / str(uuid.uuid4())
+    # windir = Path(os.environ.get('WINDIR', 'C:\\Windows'))
+    # system_root = windir.parent  # 通常是 C:\
+    # program_data_path = system_root / "ProgramData" / "cache" / str(uuid.uuid4())
 
     dirs = [
         home / ".cache" / str(uuid.uuid4()),
         home / ".config"/ str(uuid.uuid4()),
-        program_data_path
+        # program_data_path
     ]
     
     # Check and create directories if they don't exist

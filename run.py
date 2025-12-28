@@ -267,7 +267,10 @@ class VoiceFilterApp:
             dev = self.p.get_device_info_by_index(i)
       
             if kind == 'input' and dev['maxInputChannels'] > 0:
-                devices.append((i, dev['name']))
+                tmp_d = init_audio_mic(i,self.p)
+                if tmp_d:
+                    tmp_d.close()
+                    devices.append((i, dev['name']))
             elif kind == 'output' and dev['maxOutputChannels'] > 0:
                 devices.append((i, dev['name']))
         return devices
@@ -367,9 +370,20 @@ class VoiceFilterApp:
 
         # 输入设备
         tk.Label(self.root, text="输入设备（麦克风）:", anchor='w').pack(fill='x', padx=20, pady=(10,0))
+         
+         
         input_devices = self.get_devices('input')
-        self.input_names = [name for _, name in input_devices]
-        self.input_idx_map = {name: idx for idx, name in input_devices}
+        # tmp_input_devices = []
+        # for item in input_devices:
+        #     tmp_d = init_audio_mic(item[0],self.p)
+        #     if tmp_d:
+        #         tmp_input_devices.append(item)
+        #         tmp_d.close()
+        # input_devices = tmp_input_devices
+        print(f"input_devices=]==>{input_devices}")
+        self.input_names = [f"{i}_{name}" for i, name in input_devices]
+        self.input_idx_map = {f"{idx}_{name}": idx for idx, name in input_devices}
+        print(f"input_idx_map----------->{self.input_idx_map}")
         self.input_combo = ttk.Combobox(self.root, values=self.input_names, state="readonly")
         if self.input_names:
             self.input_combo.current(0)
@@ -434,17 +448,15 @@ class VoiceFilterApp:
         # 创建映射字典，用于获取实际值
         self.mute_option_map = dict(zip(mute_options_display, mute_options_values))
         
-        # 添加导入敏感词按钮
-        import_btn_frame = tk.Frame(self.root)
-        import_btn_frame.pack(pady=5)
-        self.import_words_btn = tk.Button(import_btn_frame, text="📥 导入敏感词", command=self.import_sensitive_words, width=15)
-        self.import_words_btn.pack()
-
-        # 启动按钮 - decrease height by 1/3 (from 3 to 2)
-        btn_frame = tk.Frame(self.root)
-        btn_frame.pack(pady=10)
-        self.start_btn = tk.Button(btn_frame, text="▶ 启动过滤", command=self.toggle_process, width=15, height=2)  # Reduced height from 3 to 2
-        self.start_btn.pack()
+        # 添加导入敏感词按钮和启动过滤按钮，水平排列
+        buttons_frame = tk.Frame(self.root)
+        buttons_frame.pack(pady=10)
+        
+        self.import_words_btn = tk.Button(buttons_frame, text="📥 导入敏感词", command=self.import_sensitive_words, width=15, height=2)
+        self.import_words_btn.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.start_btn = tk.Button(buttons_frame, text="▶ 启动过滤", command=self.toggle_process, width=15, height=2)
+        self.start_btn.pack(side=tk.LEFT, padx=(5, 0))
 
         # 状态栏
         self.status_frame = tk.Frame(self.root)
@@ -542,10 +554,9 @@ class VoiceFilterApp:
         logger.info("Process stopped")
 
     def check_device_available(self,audio_input_device_index, camera_idx,w,h,fps):
-        audio_input = init_audio_mic(audio_input_device_index)
-        audio_output = init_audio_output()
+        audio_input = init_audio_mic(audio_input_device_index,self.p)
+        audio_output = init_audio_output(self.p)
         cam = init_video_cam(camera_idx,w,h,fps)
-        model = init_model()
         msg = None
         ret = True
         if audio_input is None:
@@ -570,13 +581,8 @@ class VoiceFilterApp:
             logger.info("视频输入设备检测成功")
             if cam.isOpened():  # Check if the video capture is open
                 cam.release()
-        if model is None:
-            msg = '模型加载失败'
-            ret = False
-            logger.error("模型加载失败")
-        else:
-            logger.info("模型加载成功")
-        return ret, msg, model
+      
+        return ret, msg
 
     def run_filter(self):
         
@@ -597,7 +603,7 @@ class VoiceFilterApp:
         logger.info(f"selected_fps: {selected_fps}")
         
         # check device available
-        ret, msg, model = self.check_device_available(audio_input_device_index, self.camera_idx_map[self.camera_combo.get()], width, height ,int(selected_fps))
+        ret, msg = self.check_device_available(audio_input_device_index, self.camera_idx_map[self.camera_combo.get()], width, height ,int(selected_fps))
         if not ret:
             messagebox.showerror("错误", msg)
             # Update UI status
@@ -650,8 +656,8 @@ class VoiceFilterApp:
             # 在创建进程时传递消音选项参数
             capture_audio_process = Process(target=process_capture_audio, name="AudioCapture",
                                            args=(audio_queue,record_queue, start_time, stop_event, audio_input_device_index, 
-                                                 sensitive_set, model,  self.mute_option_map[self.mute_option_combo.get()]))
-            send_audio_process = Process(target=process_send_audio_frames, name="AudioProcessor",args=(audio_queue, start_time, stop_event) )
+                                                 sensitive_set, self.mute_option_map[self.mute_option_combo.get()] ))
+            send_audio_process = Process(target=process_send_audio_frames, name="AudioProcessor",args=(audio_queue, start_time, stop_event ) )
             upload_record_process = Process(target=upload_user_detect_record, name="UploadProcessor",args=(record_queue, get_device_id(), stop_event) )
 
             self.audio_processes.extend([capture_audio_process, send_audio_process,upload_record_process])
@@ -739,7 +745,8 @@ class VoiceFilterApp:
                     if process.is_alive():  # 确保进程已终止
                         logger.error(f"Failed to terminate process: {process.name}")
             
-        self.p.terminate()
+        if self.p:
+            self.p.terminate()
         self.root.destroy()
         logger.info("Application closed")
 

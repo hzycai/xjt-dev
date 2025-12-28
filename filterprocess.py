@@ -65,10 +65,10 @@ def init_video_cam(camera_index,w,h,fps):
         return None
        
                 
-def init_audio_mic(audio_input_device_index):
+def init_audio_mic(audio_input_device_index,p):
     # Initialize audio input stream similar to main.py
     logger.info("Initializing audio input stream")
-    p = pyaudio.PyAudio()
+    # p = pyaudio.PyAudio()
     INPUT_RATE = 16000
     CHUNK = 960
     CHANNELS = 1
@@ -89,10 +89,10 @@ def init_audio_mic(audio_input_device_index):
         return None
        
 
-def init_audio_output():
+def init_audio_output(p):
     # Initialize audio output stream
     logger.info("Initializing audio output stream")
-    p = pyaudio.PyAudio()
+     
     try:
         # Find VB-Cable device like in main.py
         output_idx = None
@@ -249,7 +249,8 @@ def process_send_audio_frames(audio_queue, start_time, stop_event):
     # Thread 2: Process audio frames
     logger.info("Starting audio processing and sending thread")
     # Initialize audio output stream
-    audio_stream_out = init_audio_output()
+    p = pyaudio.PyAudio()
+    audio_stream_out = init_audio_output(p)
     audio_frame = None
     while time.time() < start_time :
         time.sleep(0.01)
@@ -276,18 +277,20 @@ def process_send_audio_frames(audio_queue, start_time, stop_event):
                 logger.error(f"Error sending audio frames: {e}")
     finally:
         logger.info("Stopping audio send thread")
-    
+        p.terminate()
+ 
 
-def process_capture_audio(audio_queue, record_queue,start_time, stop_event, audio_input_device_index , sensitive_set, model, audio_fob_type):
+
+def process_capture_audio(audio_queue, record_queue,start_time, stop_event, audio_input_device_index , sensitive_set, audio_fob_type):
     # Initialize audio input stream
     logger.info("Starting audio capture thread")
-   
+    
     INPUT_RATE = 16000
     CHUNK = 960
-    audio_stream_in = init_audio_mic(audio_input_device_index)
-    if model is None:
-        model = init_model()
-    audio_stream_out = init_audio_output()
+    p = pyaudio.PyAudio()
+    audio_stream_in = init_audio_mic(audio_input_device_index, p)
+    model = init_model()
+    audio_stream_out = init_audio_output(p)
     # Buffer to accumulate audio data
     audio_buffer = np.array([], dtype=np.float32)
     # Target duration in seconds
@@ -375,6 +378,7 @@ def process_capture_audio(audio_queue, record_queue,start_time, stop_event, audi
         logger.info("Stopping audio capture thread")
         audio_stream_in.stop_stream()
         audio_stream_in.close()
+        p.terminate()
 
 def upload_user_detect_record(record_queue, mac, stop_event):
     """

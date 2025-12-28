@@ -9,3 +9,4 @@ pyvirtualcam
 loguru~=0.7.3
 pygrabber
 comtypes
+cryptography
